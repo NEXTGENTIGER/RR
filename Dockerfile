@@ -1,4 +1,3 @@
-# Utilisation d'une image Python officielle
 FROM python:3.9-slim
 
 # Installation des dépendances système
@@ -78,8 +77,7 @@ echo "Sleuthkit: $(which fls)"\n\
 echo "Volatility3: $(which volatility3)"\n\
 echo "Répertoires:"\n\
 ls -la /app\n\
-ls -la /var/run/clamav\n\
-' > /app/check_env.sh && chmod +x /app/check_env.sh
+ls -la /var/run/clamav\n' > /app/check_env.sh && chmod +x /app/check_env.sh
 
-# Commande par défaut qui vérifie l'environnement, démarre ClamAV et lance l'analyse
-CMD ["sh", "-c", "/app/check_env.sh && service clamav-daemon start && sleep 3 && python forensic_analyzer.py /app/input"] 
+# Commande par défaut
+CMD ["sh", "-c", "/app/check_env.sh && service clamav-daemon start && sleep 3 && python forensic_analyzer.py /app/input"]
