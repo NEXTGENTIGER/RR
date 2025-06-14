@@ -2,31 +2,29 @@
 # -*- coding: utf-8 -*-
 
 """
-Forensic Analyzer - Outil d'analyse forensique complet
-Analyse les fichiers, la mémoire, les disques et les systèmes
+Forensic Analyzer - Outil d'analyse forensique autonome
+Analyse les fichiers, la mémoire et les systèmes sans dépendances externes
 """
 
 import os
 import sys
 import json
 import time
-import magic
 import hashlib
 import platform
 import subprocess
 import datetime
-import yara
-import clamd
-import pefile
-import requests
-import psutil
 import socket
 import struct
 import binascii
 import logging
 import argparse
+import re
+import base64
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Union
+from urllib import request
+from urllib.error import URLError
 
 # Configuration
 API_CONFIG = {
@@ -37,10 +35,10 @@ API_CONFIG = {
 
 # Configuration des chemins
 PATHS = {
-    'input': '/app/input',
-    'output': '/app/output',
-    'logs': '/app/logs',
-    'rules': '/app/rules'
+    'input': './input',
+    'output': './output',
+    'logs': './logs',
+    'rules': './rules'
 }
 
 # Configuration du logging
@@ -76,39 +74,11 @@ class ForensicAnalyzer:
             # Création des répertoires
             for path in PATHS.values():
                 os.makedirs(path, exist_ok=True)
-
-            # Configuration de ClamAV
-            self.setup_clamav()
-            
-            # Chargement des règles YARA
-            self.setup_yara_rules()
             
             logger.info("Environnement configuré avec succès")
         except Exception as e:
             logger.error(f"Erreur lors de la configuration: {str(e)}")
             raise
-
-    def setup_clamav(self):
-        """Configure ClamAV"""
-        try:
-            self.clamd = clamd.ClamdUnixSocket()
-            self.clamd.ping()
-            logger.info("ClamAV configuré avec succès")
-        except Exception as e:
-            logger.warning(f"ClamAV non disponible: {str(e)}")
-            self.clamd = None
-
-    def setup_yara_rules(self):
-        """Charge les règles YARA"""
-        try:
-            rules_path = Path(PATHS['rules']) / 'malware.yar'
-            if rules_path.exists():
-                self.yara_rules = yara.compile(str(rules_path))
-                logger.info("Règles YARA chargées avec succès")
-            else:
-                logger.warning("Fichier de règles YARA non trouvé")
-        except Exception as e:
-            logger.error(f"Erreur lors du chargement des règles YARA: {str(e)}")
 
     def analyze_file(self):
         """Analyse un fichier"""
@@ -140,10 +110,13 @@ class ForensicAnalyzer:
             if not file_path.exists():
                 raise FileNotFoundError(f"Fichier non trouvé: {self.target_path}")
 
+            # Détection du type MIME basique
+            mime_type = self.detect_mime_type(str(file_path))
+
             self.report["analysis"]["basic_info"] = {
                 "filename": file_path.name,
                 "size": file_path.stat().st_size,
-                "type": magic.from_file(str(file_path)),
+                "type": mime_type,
                 "md5": self.calculate_hash(str(file_path), "md5"),
                 "sha1": self.calculate_hash(str(file_path), "sha1"),
                 "sha256": self.calculate_hash(str(file_path), "sha256"),
@@ -154,13 +127,40 @@ class ForensicAnalyzer:
             logger.error(f"Erreur lors de l'analyse des informations de base: {str(e)}")
             raise
 
+    def detect_mime_type(self, file_path):
+        """Détecte le type MIME d'un fichier"""
+        try:
+            # Lecture des premiers octets du fichier
+            with open(file_path, 'rb') as f:
+                header = f.read(2048)
+            
+            # Signatures de fichiers courantes
+            signatures = {
+                b'PK\x03\x04': 'application/zip',
+                b'\x7fELF': 'application/x-executable',
+                b'MZ': 'application/x-dosexec',
+                b'%PDF': 'application/pdf',
+                b'\x89PNG': 'image/png',
+                b'\xff\xd8\xff': 'image/jpeg',
+                b'GIF87a': 'image/gif',
+                b'GIF89a': 'image/gif'
+            }
+            
+            for sig, mime in signatures.items():
+                if header.startswith(sig):
+                    return mime
+            
+            return 'application/octet-stream'
+        except Exception:
+            return 'application/octet-stream'
+
     def analyze_static(self):
         """Analyse statique"""
         try:
             self.report["analysis"]["static_analysis"] = {
                 "strings": self.extract_strings(),
-                "yara_matches": self.scan_yara(),
-                "clamav_results": self.scan_clamav()
+                "entropy": self.calculate_entropy(),
+                "patterns": self.detect_patterns()
             }
         except Exception as e:
             logger.error(f"Erreur lors de l'analyse statique: {str(e)}")
@@ -170,46 +170,224 @@ class ForensicAnalyzer:
         """Analyse dynamique"""
         try:
             self.report["analysis"]["dynamic_analysis"] = {
-                "processes": self.analyze_processes(),
-                "network": self.analyze_network(),
-                "files": self.analyze_files()
+                "system_info": self.get_system_info(),
+                "network_info": self.get_network_info(),
+                "file_operations": self.analyze_file_operations()
             }
         except Exception as e:
             logger.error(f"Erreur lors de l'analyse dynamique: {str(e)}")
             raise
 
+    def calculate_entropy(self):
+        """Calcule l'entropie du fichier"""
+        try:
+            with open(self.target_path, 'rb') as f:
+                data = f.read()
+            
+            if not data:
+                return 0
+            
+            entropy = 0
+            for x in range(256):
+                p_x = data.count(bytes([x])) / len(data)
+                if p_x > 0:
+                    entropy += -p_x * math.log2(p_x)
+            
+            return entropy
+        except Exception as e:
+            logger.error(f"Erreur lors du calcul de l'entropie: {str(e)}")
+            return 0
+
+    def detect_patterns(self):
+        """Détecte les motifs suspects"""
+        patterns = {
+            'ip_addresses': self.find_ip_addresses(),
+            'urls': self.find_urls(),
+            'base64': self.find_base64(),
+            'hex_patterns': self.find_hex_patterns()
+        }
+        return patterns
+
+    def find_ip_addresses(self):
+        """Trouve les adresses IP"""
+        try:
+            with open(self.target_path, 'rb') as f:
+                content = f.read().decode('utf-8', errors='ignore')
+            
+            ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
+            return re.findall(ip_pattern, content)
+        except Exception:
+            return []
+
+    def find_urls(self):
+        """Trouve les URLs"""
+        try:
+            with open(self.target_path, 'rb') as f:
+                content = f.read().decode('utf-8', errors='ignore')
+            
+            url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+'
+            return re.findall(url_pattern, content)
+        except Exception:
+            return []
+
+    def find_base64(self):
+        """Trouve les chaînes en base64"""
+        try:
+            with open(self.target_path, 'rb') as f:
+                content = f.read().decode('utf-8', errors='ignore')
+            
+            base64_pattern = r'[A-Za-z0-9+/]{32,}={0,2}'
+            return re.findall(base64_pattern, content)
+        except Exception:
+            return []
+
+    def find_hex_patterns(self):
+        """Trouve les motifs hexadécimaux"""
+        try:
+            with open(self.target_path, 'rb') as f:
+                content = f.read()
+            
+            patterns = []
+            for i in range(len(content) - 8):
+                chunk = content[i:i+8]
+                if all(c in b'0123456789ABCDEFabcdef' for c in chunk):
+                    patterns.append(binascii.hexlify(chunk).decode())
+            
+            return patterns
+        except Exception:
+            return []
+
+    def get_system_info(self):
+        """Obtient les informations système"""
+        return {
+            'platform': platform.platform(),
+            'python_version': platform.python_version(),
+            'processor': platform.processor(),
+            'hostname': socket.gethostname(),
+            'ip_address': socket.gethostbyname(socket.gethostname())
+        }
+
+    def get_network_info(self):
+        """Obtient les informations réseau"""
+        try:
+            return {
+                'hostname': socket.gethostname(),
+                'ip_address': socket.gethostbyname(socket.gethostname()),
+                'connections': self.get_active_connections()
+            }
+        except Exception:
+            return {}
+
+    def get_active_connections(self):
+        """Obtient les connexions actives"""
+        try:
+            if platform.system() == 'Windows':
+                netstat = subprocess.check_output(['netstat', '-an'], text=True)
+            else:
+                netstat = subprocess.check_output(['netstat', '-tunlp'], text=True)
+            return netstat.splitlines()
+        except Exception:
+            return []
+
+    def analyze_file_operations(self):
+        """Analyse les opérations sur les fichiers"""
+        try:
+            file_path = Path(self.target_path)
+            return {
+                'permissions': oct(file_path.stat().st_mode)[-3:],
+                'owner': file_path.owner() if hasattr(file_path, 'owner') else 'N/A',
+                'group': file_path.group() if hasattr(file_path, 'group') else 'N/A',
+                'is_symlink': file_path.is_symlink(),
+                'is_hidden': file_path.name.startswith('.')
+            }
+        except Exception:
+            return {}
+
     def detect_threats(self):
         """Détecte les menaces"""
         try:
             self.report["analysis"]["threats"] = {
-                "malware": self.detect_malware(),
-                "shellcode": self.detect_shellcode(),
-                "packer": self.detect_packer(),
-                "anti_analysis": self.detect_anti_analysis(),
-                "persistence": self.detect_persistence(),
-                "privilege_escalation": self.detect_privilege_escalation(),
-                "data_exfiltration": self.detect_data_exfiltration()
+                "suspicious_patterns": self.detect_suspicious_patterns(),
+                "encrypted_content": self.detect_encryption(),
+                "obfuscated_code": self.detect_obfuscation(),
+                "network_indicators": self.detect_network_indicators()
             }
         except Exception as e:
             logger.error(f"Erreur lors de la détection des menaces: {str(e)}")
             raise
 
+    def detect_suspicious_patterns(self):
+        """Détecte les motifs suspects"""
+        patterns = []
+        try:
+            with open(self.target_path, 'rb') as f:
+                content = f.read().decode('utf-8', errors='ignore')
+            
+            # Recherche de motifs suspects
+            suspicious = [
+                'cmd.exe', 'powershell', 'wget', 'curl', 'download',
+                'http://', 'https://', 'ftp://', 'net user', 'net group'
+            ]
+            
+            for pattern in suspicious:
+                if pattern.lower() in content.lower():
+                    patterns.append(pattern)
+            
+            return patterns
+        except Exception:
+            return []
+
+    def detect_encryption(self):
+        """Détecte le contenu chiffré"""
+        try:
+            entropy = self.calculate_entropy()
+            return {
+                'high_entropy': entropy > 7.0,
+                'entropy_value': entropy
+            }
+        except Exception:
+            return {'high_entropy': False, 'entropy_value': 0}
+
+    def detect_obfuscation(self):
+        """Détecte le code obfusqué"""
+        try:
+            with open(self.target_path, 'rb') as f:
+                content = f.read().decode('utf-8', errors='ignore')
+            
+            indicators = {
+                'base64_encoded': len(self.find_base64()) > 0,
+                'hex_encoded': len(self.find_hex_patterns()) > 0,
+                'suspicious_length': len(content) > 1000000
+            }
+            
+            return indicators
+        except Exception:
+            return {}
+
+    def detect_network_indicators(self):
+        """Détecte les indicateurs réseau"""
+        return {
+            'ip_addresses': self.find_ip_addresses(),
+            'urls': self.find_urls()
+        }
+
     def generate_recommendations(self):
         """Génère des recommandations"""
         try:
             recommendations = []
+            threats = self.report["analysis"]["threats"]
             
-            if self.report["analysis"]["threats"]["malware"]:
-                recommendations.append("Isoler le système immédiatement")
-                recommendations.append("Effectuer une analyse complète avec un antivirus à jour")
+            if threats["suspicious_patterns"]:
+                recommendations.append("Fichier contient des motifs suspects - Analyse approfondie recommandée")
             
-            if self.report["analysis"]["threats"]["shellcode"]:
-                recommendations.append("Vérifier les processus en cours")
-                recommendations.append("Analyser la mémoire pour d'autres shellcodes")
+            if threats["encrypted_content"]["high_entropy"]:
+                recommendations.append("Contenu potentiellement chiffré détecté - Vérification de l'intégrité recommandée")
             
-            if self.report["analysis"]["threats"]["packer"]:
-                recommendations.append("Déballer le malware pour analyse approfondie")
-                recommendations.append("Vérifier les signatures de packers connus")
+            if threats["obfuscated_code"]["base64_encoded"] or threats["obfuscated_code"]["hex_encoded"]:
+                recommendations.append("Code potentiellement obfusqué détecté - Analyse statique approfondie recommandée")
+            
+            if threats["network_indicators"]["ip_addresses"] or threats["network_indicators"]["urls"]:
+                recommendations.append("Indicateurs réseau détectés - Analyse du trafic réseau recommandée")
             
             self.report["analysis"]["recommendations"] = recommendations
         except Exception as e:
@@ -231,132 +409,27 @@ class ForensicAnalyzer:
     def extract_strings(self):
         """Extrait les chaînes de caractères"""
         try:
-            result = subprocess.run(['strings', self.target_path],
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE,
-                                  text=True)
-            return result.stdout.splitlines()
+            with open(self.target_path, 'rb') as f:
+                content = f.read()
+            
+            # Extraction des chaînes ASCII
+            strings = []
+            current_string = ''
+            
+            for byte in content:
+                if 32 <= byte <= 126:  # Caractères ASCII imprimables
+                    current_string += chr(byte)
+                else:
+                    if len(current_string) >= 4:  # Minimum 4 caractères
+                        strings.append(current_string)
+                    current_string = ''
+            
+            if len(current_string) >= 4:
+                strings.append(current_string)
+            
+            return strings
         except Exception as e:
             logger.error(f"Erreur lors de l'extraction des chaînes: {str(e)}")
-            return []
-
-    def scan_yara(self):
-        """Scanne avec YARA"""
-        try:
-            if hasattr(self, 'yara_rules'):
-                matches = self.yara_rules.match(self.target_path)
-                return [match.rule for match in matches]
-            return []
-        except Exception as e:
-            logger.error(f"Erreur lors du scan YARA: {str(e)}")
-            return []
-
-    def scan_clamav(self):
-        """Scanne avec ClamAV"""
-        try:
-            if self.clamd:
-                result = self.clamd.scan(self.target_path)
-                return result
-            return []
-        except Exception as e:
-            logger.error(f"Erreur lors du scan ClamAV: {str(e)}")
-            return []
-
-    def analyze_processes(self):
-        """Analyse les processus"""
-        try:
-            return [p.info for p in psutil.process_iter(['pid', 'name', 'cmdline'])]
-        except Exception as e:
-            logger.error(f"Erreur lors de l'analyse des processus: {str(e)}")
-            return []
-
-    def analyze_network(self):
-        """Analyse le réseau"""
-        try:
-            return [conn.info for conn in psutil.net_connections()]
-        except Exception as e:
-            logger.error(f"Erreur lors de l'analyse réseau: {str(e)}")
-            return []
-
-    def analyze_files(self):
-        """Analyse les fichiers"""
-        try:
-            return [f for f in Path(self.target_path).rglob('*') if f.is_file()]
-        except Exception as e:
-            logger.error(f"Erreur lors de l'analyse des fichiers: {str(e)}")
-            return []
-
-    def detect_malware(self):
-        """Détecte les malwares"""
-        try:
-            malware = []
-            if self.report["analysis"]["static_analysis"]["clamav_results"]:
-                malware.extend(self.report["analysis"]["static_analysis"]["clamav_results"])
-            if self.report["analysis"]["static_analysis"]["yara_matches"]:
-                malware.extend(self.report["analysis"]["static_analysis"]["yara_matches"])
-            return malware
-        except Exception as e:
-            logger.error(f"Erreur lors de la détection des malwares: {str(e)}")
-            return []
-
-    def detect_shellcode(self):
-        """Détecte les shellcodes"""
-        try:
-            shellcode = []
-            # Logique de détection de shellcode
-            return shellcode
-        except Exception as e:
-            logger.error(f"Erreur lors de la détection des shellcodes: {str(e)}")
-            return []
-
-    def detect_packer(self):
-        """Détecte les packers"""
-        try:
-            packers = []
-            # Logique de détection de packers
-            return packers
-        except Exception as e:
-            logger.error(f"Erreur lors de la détection des packers: {str(e)}")
-            return []
-
-    def detect_anti_analysis(self):
-        """Détecte les techniques anti-analyse"""
-        try:
-            anti_analysis = []
-            # Logique de détection anti-analyse
-            return anti_analysis
-        except Exception as e:
-            logger.error(f"Erreur lors de la détection des techniques anti-analyse: {str(e)}")
-            return []
-
-    def detect_persistence(self):
-        """Détecte les mécanismes de persistance"""
-        try:
-            persistence = []
-            # Logique de détection de persistance
-            return persistence
-        except Exception as e:
-            logger.error(f"Erreur lors de la détection des mécanismes de persistance: {str(e)}")
-            return []
-
-    def detect_privilege_escalation(self):
-        """Détecte les tentatives d'élévation de privilèges"""
-        try:
-            privilege_escalation = []
-            # Logique de détection d'élévation de privilèges
-            return privilege_escalation
-        except Exception as e:
-            logger.error(f"Erreur lors de la détection des tentatives d'élévation de privilèges: {str(e)}")
-            return []
-
-    def detect_data_exfiltration(self):
-        """Détecte les tentatives d'exfiltration de données"""
-        try:
-            exfiltration = []
-            # Logique de détection d'exfiltration
-            return exfiltration
-        except Exception as e:
-            logger.error(f"Erreur lors de la détection des tentatives d'exfiltration: {str(e)}")
             return []
 
     def save_report(self):
@@ -382,18 +455,20 @@ class ForensicAnalyzer:
                 'Accept': 'application/json'
             }
             
+            data = json.dumps(self.report).encode('utf-8')
+            req = request.Request(
+                API_CONFIG['endpoint'],
+                data=data,
+                headers=headers,
+                method='POST'
+            )
+            
             for attempt in range(API_CONFIG['max_retries']):
                 try:
-                    response = requests.post(
-                        API_CONFIG['endpoint'],
-                        json=self.report,
-                        headers=headers,
-                        timeout=API_CONFIG['timeout']
-                    )
-                    response.raise_for_status()
-                    logger.info(f"Rapport envoyé avec succès à l'API")
-                    return response.json()
-                except requests.exceptions.RequestException as e:
+                    with request.urlopen(req, timeout=API_CONFIG['timeout']) as response:
+                        logger.info(f"Rapport envoyé avec succès à l'API")
+                        return json.loads(response.read().decode())
+                except URLError as e:
                     if attempt == API_CONFIG['max_retries'] - 1:
                         raise e
                     continue
@@ -427,4 +502,4 @@ def main():
         sys.exit(1)
 
 if __name__ == '__main__':
-    main()           
+    main() 
