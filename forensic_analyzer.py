@@ -577,31 +577,47 @@ class ForensicAnalyzer:
         }
 
         for analysis in file_analyses:
-            # Comptage des types de fichiers
-            file_type = analysis["file_info"].get("type", "unknown")
-            summary["file_types"][file_type] = summary["file_types"].get(file_type, 0) + 1
+            try:
+                # Comptage des types de fichiers
+                file_type = analysis["file_info"].get("type", "unknown")
+                summary["file_types"][file_type] = summary["file_types"].get(file_type, 0) + 1
 
-            # Détection des menaces
-            clamav_result = analysis["clamav"]
-            if isinstance(clamav_result, dict) and clamav_result.get("status") == "FOUND":
-                summary["infected_files"] += 1
-                summary["threats"].append({
-                    "file": analysis["file_info"]["name"],
-                    "type": "virus",
-                    "details": clamav_result
-                })
-
-            # Analyse YARA
-            yara_results = analysis["yara"]
-            if yara_results and isinstance(yara_results, list):
-                for match in yara_results:
-                    if match.get("rule") not in ["No_YARA_Matches", "YARA_Not_Available", "YARA_Error"]:
-                        summary["suspicious_files"] += 1
+                # Détection des menaces ClamAV
+                clamav_result = analysis["clamav"]
+                if isinstance(clamav_result, dict):
+                    if clamav_result.get("status") == "FOUND":
+                        summary["infected_files"] += 1
                         summary["threats"].append({
                             "file": analysis["file_info"]["name"],
-                            "type": "suspicious",
-                            "details": match
+                            "type": "virus",
+                            "details": clamav_result
                         })
+                elif isinstance(clamav_result, tuple):
+                    if clamav_result[0] == "FOUND":
+                        summary["infected_files"] += 1
+                        summary["threats"].append({
+                            "file": analysis["file_info"]["name"],
+                            "type": "virus",
+                            "details": {
+                                "status": "FOUND",
+                                "details": clamav_result[1] if len(clamav_result) > 1 else None
+                            }
+                        })
+
+                # Analyse YARA
+                yara_results = analysis["yara"]
+                if yara_results and isinstance(yara_results, list):
+                    for match in yara_results:
+                        if isinstance(match, dict) and match.get("rule") not in ["No_YARA_Matches", "YARA_Not_Available", "YARA_Error"]:
+                            summary["suspicious_files"] += 1
+                            summary["threats"].append({
+                                "file": analysis["file_info"]["name"],
+                                "type": "suspicious",
+                                "details": match
+                            })
+            except Exception as e:
+                self.log(f"Erreur lors de l'analyse du fichier {analysis.get('file_info', {}).get('name', 'unknown')}: {str(e)}")
+                continue
 
         return summary
 
