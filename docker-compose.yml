@@ -8,6 +8,8 @@ services:
       - ./output:/app/output
       - ./logs:/app/logs
       - ./rules:/app/rules
+      - /:/host:ro  # Montage du disque local en lecture seule
+    privileged: true  # Nécessaire pour accéder au matériel
     tty: true
     stdin_open: true
 
