@@ -73,17 +73,21 @@ ENV CLAMD_SOCKET=/var/run/clamav/clamd.sock
 ENV CLAMD_TCP=localhost:3310
 
 # Script de vérification de l'environnement
-RUN echo '#!/bin/sh\n\
-echo "Vérification de l\'environnement..."\n\
-echo "Python: $(python3 --version)"\n\
-echo "ClamAV: $(which clamd)"\n\
-echo "YARA: $(which yara)"\n\
-echo "ExifTool: $(which exiftool)"\n\
-echo "Sleuthkit: $(which fls)"\n\
-echo "Volatility3: $(which volatility3)"\n\
-echo "Répertoires:"\n\
-ls -la /app\n\
-ls -la /var/run/clamav\n' > /app/check_env.sh && chmod +x /app/check_env.sh
+RUN cat << 'EOF' > /app/check_env.sh
+#!/bin/sh
+echo "Vérification de l'environnement..."
+echo "Python: $(python3 --version)"
+echo "ClamAV: $(which clamd)"
+echo "YARA: $(which yara)"
+echo "ExifTool: $(which exiftool)"
+echo "Sleuthkit: $(which fls)"
+echo "Volatility3: $(which volatility3)"
+echo "Répertoires:"
+ls -la /app
+ls -la /var/run/clamav
+EOF
+
+RUN chmod +x /app/check_env.sh
 
 # Commande par défaut
 CMD ["sh", "-c", "/app/check_env.sh && clamd & sleep 5 && python3 forensic_analyzer.py /app/input"]
