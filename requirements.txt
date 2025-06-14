@@ -1,5 +1,4 @@
 requests
 python-magic
 yara-python
-python-clamd
-
+git+https://github.com/gjmr/pyClamd.git
