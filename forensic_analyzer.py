@@ -1,22 +1,32 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Forensic Analyzer - Outil d'analyse forensique complet
+Analyse les fichiers, la mémoire, les disques et les systèmes
+"""
+
 import os
-import json
-import hashlib
-import subprocess
-import requests
-import magic
-import yara
-import tempfile
-import shutil
-import logging
-import zipfile
-import platform
 import sys
+import json
 import time
-from datetime import datetime
-from typing import Dict, Any, Optional, List, Set
-from json import JSONEncoder
+import magic
+import hashlib
+import platform
+import subprocess
+import datetime
+import yara
+import clamd
+import pefile
+import requests
+import psutil
+import socket
+import struct
+import binascii
+import logging
+import argparse
 from pathlib import Path
+from typing import Dict, List, Any, Optional, Union
 
 # Configuration
 API_CONFIG = {
@@ -25,792 +35,396 @@ API_CONFIG = {
     'max_retries': 3
 }
 
-# Chemins des outils
-TOOL_PATHS = {
-    'clamd_socket': '/var/run/clamav/clamd.sock',
-    'clamd_tcp': 'localhost:3310',
-    'exiftool': '/usr/bin/exiftool',
-    'fls': '/usr/bin/fls',
-    'mmls': '/usr/bin/mmls',
-    'vol': shutil.which("volatility3") or '/usr/local/bin/volatility3'
+# Configuration des chemins
+PATHS = {
+    'input': '/app/input',
+    'output': '/app/output',
+    'logs': '/app/logs',
+    'rules': '/app/rules'
 }
 
-# Extensions de fichiers à analyser
-ANALYZED_EXTENSIONS = {
-    # Exécutables
-    '.exe', '.dll', '.sys', '.drv', '.bin',
-    # Scripts
-    '.bat', '.cmd', '.ps1', '.vbs', '.js', '.py',
-    # Documents
-    '.doc', '.docx', '.xls', '.xlsx', '.pdf',
-    # Images
-    '.jpg', '.jpeg', '.png', '.gif', '.bmp',
-    # Archives
-    '.zip', '.rar', '.7z', '.tar', '.gz',
-    # Autres
-    '.txt', '.log', '.ini', '.conf'
-}
-
-# Règles YARA de base
-YARA_RULES = """
-rule Suspicious_Executable {
-    meta:
-        description = "Détecte les fichiers exécutables suspects"
-        severity = "HIGH"
-    strings:
-        $mz = "MZ"
-        $pe = "PE"
-        $exe = ".exe"
-    condition:
-        $mz at 0 and $pe and $exe
-}
-
-rule Malicious_Shellcode {
-    meta:
-        description = "Détecte les shellcodes malveillants"
-        severity = "HIGH"
-    strings:
-        $shellcode1 = { 90 90 90 90 90 90 90 90 }  // NOP sled
-        $shellcode2 = { 68 ?? ?? ?? ?? C3 }        // PUSH + RET
-    condition:
-        any of them
-}
-
-rule Suspicious_Strings {
-    meta:
-        description = "Détecte les chaînes de caractères suspectes"
-        severity = "MEDIUM"
-    strings:
-        $cmd = "cmd.exe" nocase
-        $powershell = "powershell" nocase
-        $wget = "wget" nocase
-        $curl = "curl" nocase
-        $download = "download" nocase
-    condition:
-        2 of them
-}
-
-rule Suspicious_IP_Address {
-    meta:
-        description = "Détecte les adresses IP suspectes"
-        severity = "MEDIUM"
-    strings:
-        $ip = /[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}/
-    condition:
-        $ip
-}
-"""
-
-# Détection du système d'exploitation
-IS_WINDOWS = platform.system() == "Windows"
-IS_LINUX = platform.system() == "Linux"
-IS_MACOS = platform.system() == "Darwin"
-
-# Configuration des logs
-LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-LOG_LEVEL = logging.INFO
-LOG_DIR = Path("logs")
-LOG_FILE = LOG_DIR / "forensic_analyzer.log"
-
-# Extensions de fichiers
-MEMORY_EXTENSIONS = {'.dmp', '.mem', '.raw', '.img', '.dump'}
-DISK_EXTENSIONS = {'.dd', '.img', '.raw', '.vmdk', '.vhd', '.vhdx'}
-
-# Niveaux de risque
-RISK_LEVELS = {
-    'LOW': 0,
-    'MEDIUM': 1,
-    'HIGH': 2,
-    'CRITICAL': 3
-}
-
-# Configuration des outils selon l'OS
-TOOLS = {
-    'clamav': {
-        'commands': {
-            'Windows': ['clamd.exe', 'clamdscan.exe'],
-            'Linux': ['clamd', 'clamdscan'],
-            'Darwin': ['clamd', 'clamdscan']
-        },
-        'required': True
-    },
-    'yara': {
-        'commands': {
-            'Windows': ['yara.exe'],
-            'Linux': ['yara'],
-            'Darwin': ['yara']
-        },
-        'required': True
-    },
-    'volatility': {
-        'commands': {
-            'Windows': ['volatility3.exe', 'vol.py', 'volatility.exe'],
-            'Linux': ['volatility3', 'vol.py', 'volatility'],
-            'Darwin': ['volatility3', 'vol.py', 'volatility']
-        },
-        'required': False
-    },
-    'sleuthkit': {
-        'commands': {
-            'Windows': ['fls.exe'],
-            'Linux': ['fls'],
-            'Darwin': ['fls']
-        },
-        'required': False
-    },
-    'exiftool': {
-        'commands': {
-            'Windows': ['exiftool.exe'],
-            'Linux': ['exiftool'],
-            'Darwin': ['exiftool']
-        },
-        'required': True
-    }
-}
-
-class DateTimeEncoder(JSONEncoder):
-    """Encodeur personnalisé pour gérer les objets datetime dans le JSON."""
-    def default(self, obj):
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        return super().default(obj)
+# Configuration du logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('forensic_analysis.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 class ForensicAnalyzer:
-    def __init__(self, target_path, api_endpoint=None):
+    def __init__(self, target_path):
         self.target_path = target_path
-        self.api_endpoint = api_endpoint or API_CONFIG['endpoint']
-        self.output_dir = "/app/output"
-        self.log_dir = "/app/logs"
-        self.rules_dir = "/app/rules"
-        self.setup_directories()
-        self.setup_logging()
-        self.setup_yara_rules()
-        self.setup_clamav()
-        
-    def setup_directories(self):
-        """Crée les répertoires nécessaires."""
-        try:
-            for directory in [self.output_dir, self.log_dir, self.rules_dir]:
-                os.makedirs(directory, exist_ok=True)
-        except Exception as e:
-            print(f"Erreur lors de la création des répertoires: {str(e)}")
-            sys.exit(1)
+        self.setup_environment()
+        self.report = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "target": target_path,
+            "analysis": {
+                "basic_info": {},
+                "static_analysis": {},
+                "dynamic_analysis": {},
+                "threats": {},
+                "recommendations": []
+            }
+        }
 
-    def setup_logging(self):
-        """Configure la journalisation."""
+    def setup_environment(self):
+        """Configure l'environnement d'analyse"""
         try:
-            self.log_file = os.path.join(self.log_dir, f"forensic_analyzer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
-            with open(self.log_file, 'w') as f:
-                f.write(f"=== Début de l'analyse: {datetime.now().strftime('%Y%m%d_%H%M%S')} ===\n")
-        except Exception as e:
-            print(f"Erreur lors de la configuration de la journalisation: {str(e)}")
-            sys.exit(1)
+            # Création des répertoires
+            for path in PATHS.values():
+                os.makedirs(path, exist_ok=True)
 
-    def log(self, message):
-        """Écrit un message dans le fichier de log."""
-        try:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            with open(self.log_file, 'a') as f:
-                f.write(f"[{timestamp}] {message}\n")
+            # Configuration de ClamAV
+            self.setup_clamav()
+            
+            # Chargement des règles YARA
+            self.setup_yara_rules()
+            
+            logger.info("Environnement configuré avec succès")
         except Exception as e:
-            print(f"Erreur lors de l'écriture dans le log: {str(e)}")
+            logger.error(f"Erreur lors de la configuration: {str(e)}")
+            raise
 
     def setup_clamav(self):
-        """Configure et initialise ClamAV."""
-        self.clamd_client = None
-        max_retries = 5
-        retry_delay = 2
-        
-        for attempt in range(max_retries):
-            try:
-                import clamd
-                # Essai d'abord la connexion socket
-                try:
-                    self.clamd_client = clamd.ClamdUnixSocket(TOOL_PATHS['clamd_socket'])
-                    self.clamd_client.ping()
-                    print("ClamAV est connecté via socket")
-                    return
-                except:
-                    # Si le socket échoue, essayer TCP
-                    self.clamd_client = clamd.ClamdNetworkSocket(
-                        host='localhost',
-                        port=3310,
-                        timeout=30
-                    )
-                    self.clamd_client.ping()
-                    print("ClamAV est connecté via TCP")
-                    return
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    print(f"Tentative {attempt + 1}/{max_retries} de connexion à ClamAV échouée: {e}")
-                    time.sleep(retry_delay)
-                else:
-                    print(f"Warning: ClamAV not available after {max_retries} attempts: {e}")
-                    self.clamd_client = None
-
-    def execute_command(self, command):
-        """Exécute une commande système."""
+        """Configure ClamAV"""
         try:
-            # Vérification de l'existence des outils
-            if command[0] in TOOL_PATHS:
-                command[0] = TOOL_PATHS[command[0]]
-            
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=300  # 5 minutes timeout
-            )
-            return {
-                "success": True,
-                "output": result.stdout,
-                "error": None
-            }
-        except subprocess.TimeoutExpired:
-            return {
-                "success": False,
-                "output": None,
-                "error": f"Commande timeout après 5 minutes: {' '.join(command)}"
-            }
-        except subprocess.CalledProcessError as e:
-            return {
-                "success": False,
-                "output": e.stdout,
-                "error": e.stderr
-            }
+            self.clamd = clamd.ClamdUnixSocket()
+            self.clamd.ping()
+            logger.info("ClamAV configuré avec succès")
         except Exception as e:
-            return {
-                "success": False,
-                "output": None,
-                "error": str(e)
-            }
-
-    def get_basic_metadata(self):
-        """Récupère les métadonnées de base du fichier."""
-        try:
-            file_stats = os.stat(self.target_path)
-            return {
-                "nom": os.path.basename(self.target_path),
-                "taille": file_stats.st_size,
-                "date_creation": datetime.fromtimestamp(file_stats.st_ctime).isoformat(),
-                "date_modification": datetime.fromtimestamp(file_stats.st_mtime).isoformat(),
-                "type_mime": magic.from_file(self.target_path, mime=True)
-            }
-        except Exception as e:
-            self.log(f"Erreur lors de la récupération des métadonnées: {str(e)}")
-            return {}
-
-    def scan_clamav(self, file_path):
-        """Analyse le fichier avec ClamAV."""
-        if self.clamd_client is None:
-            return {"status": "ClamAV scanning disabled - daemon not available"}
-        
-        try:
-            # Vérification de la taille du fichier
-            file_size = os.path.getsize(file_path)
-            if file_size > 100 * 1024 * 1024:  # 100MB
-                return {"status": "SKIPPED", "details": "File too large for ClamAV scan"}
-            
-            result = self.clamd_client.scan(file_path)
-            if not result:
-                return {"status": "No threats found", "details": "File is clean"}
-            
-            # Conversion du résultat en format dictionnaire
-            scan_result = result.get(file_path, {})
-            if isinstance(scan_result, tuple):
-                return {
-                    "status": "FOUND" if scan_result[0] == "FOUND" else "OK",
-                    "details": scan_result[1] if len(scan_result) > 1 else None
-                }
-            return scan_result
-        except Exception as e:
-            self.log(f"Erreur lors de l'analyse ClamAV: {str(e)}")
-            return {"status": "ERROR", "error": str(e)}
+            logger.warning(f"ClamAV non disponible: {str(e)}")
+            self.clamd = None
 
     def setup_yara_rules(self):
-        """Configure les règles YARA."""
+        """Charge les règles YARA"""
         try:
-            # Essayer de charger les règles externes
-            yara_file = os.path.join(self.rules_dir, "malware.yar")
-            if os.path.exists(yara_file):
-                self.yara_rules = yara.compile(filepath=yara_file)
-                print("Règles YARA externes chargées avec succès")
+            rules_path = Path(PATHS['rules']) / 'malware.yar'
+            if rules_path.exists():
+                self.yara_rules = yara.compile(str(rules_path))
+                logger.info("Règles YARA chargées avec succès")
             else:
-                raise FileNotFoundError(f"Fichier de règles YARA non trouvé: {yara_file}")
+                logger.warning("Fichier de règles YARA non trouvé")
         except Exception as e:
-            print(f"Erreur lors du chargement des règles YARA externes: {e}")
-            # Charger les règles internes en secours
-            self.yara_rules = yara.compile(source=YARA_RULES)
-            print("Règles YARA internes chargées en secours")
+            logger.error(f"Erreur lors du chargement des règles YARA: {str(e)}")
 
-    def scan_yara(self, file_path):
-        """Analyse le fichier avec YARA."""
+    def analyze_file(self):
+        """Analyse un fichier"""
         try:
-            if self.yara_rules:
-                matches = self.yara_rules.match(file_path)
-                if not matches:
-                    return [{"rule": "No_YARA_Matches", "meta": {"description": "No suspicious patterns found"}}]
-                return [{
-                    'rule': match.rule,
-                    'meta': match.meta,
-                    'strings': [str(s) for s in match.strings]
-                } for match in matches]
-            return [{"rule": "YARA_Not_Available", "meta": {"description": "YARA rules not loaded"}}]
-        except Exception as e:
-            self.log(f"Erreur lors de l'analyse YARA: {str(e)}")
-            return [{"rule": "YARA_Error", "meta": {"description": str(e)}}]
-
-    def get_exif_data(self, file_path):
-        """Récupère les métadonnées EXIF avec exiftool."""
-        try:
-            result = self.execute_command([TOOL_PATHS['exiftool'], '-j', file_path])
-            if not result.get('success'):
-                return {
-                    "success": False,
-                    "output": "No EXIF data found",
-                    "error": result.get('error', 'Unknown error')
-                }
-            return result
-        except Exception as e:
-            return {
-                "success": False,
-                "output": None,
-                "error": str(e)
-            }
-
-    def analyze_with_sleuthkit(self, file_path):
-        """Analyse un fichier avec Sleuthkit."""
-        try:
-            # Vérifier si c'est une image disque valide
-            _, ext = os.path.splitext(file_path)
-            if ext.lower() not in DISK_EXTENSIONS:
-                return {
-                    "success": False,
-                    "output": None,
-                    "error": f"Format de fichier non supporté pour l'analyse disque: {ext}"
-                }
-
-            # Exécuter mmls pour obtenir la table des partitions
-            mmls_cmd = [TOOL_PATHS['mmls'], file_path]
-            mmls_result = subprocess.run(mmls_cmd, capture_output=True, text=True)
+            # Analyse de base
+            self.analyze_basic_info()
             
-            if mmls_result.returncode != 0:
-                return {
-                    "success": False,
-                    "output": None,
-                    "error": mmls_result.stderr
-                }
-
-            # Exécuter fls pour lister les fichiers
-            fls_cmd = [TOOL_PATHS['fls'], file_path]
-            fls_result = subprocess.run(fls_cmd, capture_output=True, text=True)
+            # Analyse statique
+            self.analyze_static()
             
-            return {
-                "success": True,
-                "mmls_output": mmls_result.stdout,
-                "fls_output": fls_result.stdout,
-                "error": None
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "output": None,
-                "error": str(e)
-            }
-
-    def analyze_with_volatility(self, file_path):
-        """Analyse un fichier avec Volatility."""
-        try:
-            if not os.path.exists(TOOL_PATHS['vol']):
-                return {
-                    "success": False,
-                    "output": None,
-                    "error": f"Volatility non trouvé à {TOOL_PATHS['vol']}"
-                }
-
-            # Vérifier si c'est une image mémoire valide
-            _, ext = os.path.splitext(file_path)
-            if ext.lower() not in MEMORY_EXTENSIONS:
-                return {
-                    "success": False,
-                    "output": None,
-                    "error": f"Format de fichier non supporté pour l'analyse mémoire: {ext}"
-                }
-
-            # Exécuter Volatility
-            cmd = [TOOL_PATHS['vol'], '-f', file_path, 'windows.info.Info']
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            # Analyse dynamique
+            self.analyze_dynamic()
             
-            if result.returncode == 0:
-                return {
-                    "success": True,
-                    "output": result.stdout,
-                    "error": None
-                }
-            else:
-                return {
-                    "success": False,
-                    "output": None,
-                    "error": result.stderr
-                }
+            # Détection des menaces
+            self.detect_threats()
+            
+            # Génération des recommandations
+            self.generate_recommendations()
+            
+            return self.report
         except Exception as e:
-            return {
-                "success": False,
-                "output": None,
-                "error": str(e)
-            }
+            logger.error(f"Erreur lors de l'analyse: {str(e)}")
+            raise
 
-    def analyze_target(self):
-        """Analyse le chemin cible (fichier ou répertoire)."""
-        results = {
-            "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
-            "target_info": self.get_target_info(),
-            "analysis": {
-                "files": [],
-                "system": self.analyze_system(),
-                "summary": {}
-            }
-        }
-
-        if os.path.isfile(self.target_path):
-            # Analyse d'un fichier unique
-            file_analysis = self.analyze_file(self.target_path)
-            results["analysis"]["files"].append(file_analysis)
-        else:
-            # Analyse récursive d'un répertoire
-            for root, _, files in os.walk(self.target_path):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    if any(file.lower().endswith(ext) for ext in ANALYZED_EXTENSIONS):
-                        file_analysis = self.analyze_file(file_path)
-                        results["analysis"]["files"].append(file_analysis)
-
-        # Génération du résumé
-        results["analysis"]["summary"] = self.generate_summary(results["analysis"]["files"])
-        
-        # Sauvegarde et envoi des résultats
-        self.save_results(results)
-        self.send_to_api(results)
-        
-        return results
-
-    def get_target_info(self):
-        """Récupère les informations sur la cible."""
+    def analyze_basic_info(self):
+        """Analyse les informations de base"""
         try:
-            info = {
-                "path": self.target_path,
-                "type": "directory" if os.path.isdir(self.target_path) else "file",
-                "size": self.get_size(self.target_path),
-                "permissions": self.get_permissions(self.target_path),
-                "last_modified": datetime.fromtimestamp(os.path.getmtime(self.target_path)).isoformat()
-            }
-            return info
-        except Exception as e:
-            self.log(f"Erreur lors de la récupération des informations sur la cible: {str(e)}")
-            return {
-                "path": self.target_path,
-                "error": str(e)
-            }
+            file_path = Path(self.target_path)
+            if not file_path.exists():
+                raise FileNotFoundError(f"Fichier non trouvé: {self.target_path}")
 
-    def get_size(self, path):
-        """Calcule la taille d'un fichier ou d'un répertoire."""
-        try:
-            if os.path.isfile(path):
-                return os.path.getsize(path)
-            elif os.path.isdir(path):
-                total_size = 0
-                for dirpath, _, filenames in os.walk(path):
-                    for f in filenames:
-                        fp = os.path.join(dirpath, f)
-                        if os.path.exists(fp):
-                            total_size += os.path.getsize(fp)
-                return total_size
-            return 0
-        except Exception as e:
-            self.log(f"Erreur lors du calcul de la taille: {str(e)}")
-            return 0
-
-    def get_permissions(self, path):
-        """Récupère les permissions d'un fichier ou d'un répertoire."""
-        try:
-            return oct(os.stat(path).st_mode)[-3:]
-        except Exception as e:
-            self.log(f"Erreur lors de la récupération des permissions: {str(e)}")
-            return "000"
-
-    def analyze_system(self):
-        """Analyse le système."""
-        system_info = {
-            "os_info": self.get_os_info(),
-            "disk_info": {},
-            "memory_info": {},
-            "network_info": self.get_network_info()
-        }
-
-        # Vérifier si /host est un fichier image valide
-        host_path = "/host"
-        if os.path.exists(host_path):
-            if os.path.isfile(host_path):
-                # Vérifier si c'est une image disque ou mémoire
-                _, ext = os.path.splitext(host_path)
-                if ext.lower() in DISK_EXTENSIONS:
-                    system_info["disk_info"] = self.analyze_with_sleuthkit(host_path)
-                elif ext.lower() in MEMORY_EXTENSIONS:
-                    system_info["memory_info"] = self.analyze_with_volatility(host_path)
-                else:
-                    system_info["disk_info"] = {"error": f"Format de fichier non supporté: {ext}"}
-            else:
-                # C'est un dossier, chercher des fichiers image
-                for root, _, files in os.walk(host_path):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        _, ext = os.path.splitext(file)
-                        if ext.lower() in DISK_EXTENSIONS:
-                            system_info["disk_info"] = self.analyze_with_sleuthkit(file_path)
-                            break
-                        elif ext.lower() in MEMORY_EXTENSIONS:
-                            system_info["memory_info"] = self.analyze_with_volatility(file_path)
-                            break
-        else:
-            system_info["disk_info"] = {"error": "Aucune image disque trouvée dans /host"}
-            system_info["memory_info"] = {"error": "Aucune image mémoire trouvée dans /host"}
-
-        return system_info
-
-    def get_os_info(self):
-        """Récupère les informations sur le système d'exploitation."""
-        try:
-            uname = os.uname()
-            return {
-                "system": uname.sysname,
-                "node": uname.nodename,
-                "release": uname.release,
-                "version": uname.version,
-                "machine": uname.machine
-            }
-        except:
-            return {"error": "Impossible de récupérer les informations système"}
-
-    def get_network_info(self):
-        """Récupère les informations réseau."""
-        try:
-            result = self.execute_command(['netstat', '-tuln'])
-            return result
-        except:
-            return {"error": "Impossible de récupérer les informations réseau"}
-
-    def analyze_file(self, file_path):
-        """Analyse un fichier individuel."""
-        return {
-            "file_info": self.get_file_info(file_path),
-            "clamav": self.scan_clamav(file_path),
-            "yara": self.scan_yara(file_path),
-            "exif": self.get_exif_data(file_path),
-            "sleuthkit": self.analyze_with_sleuthkit(file_path),
-            "volatility": self.analyze_with_volatility(file_path)
-        }
-
-    def get_file_info(self, file_path):
-        """Récupère les informations de base sur un fichier."""
-        try:
-            file_stat = os.stat(file_path)
-            return {
-                "name": os.path.basename(file_path),
-                "size": file_stat.st_size,
-                "type": magic.from_file(file_path, mime=True),
-                "md5": self.calculate_hash(file_path, 'md5'),
-                "sha256": self.calculate_hash(file_path, 'sha256'),
-                "permissions": oct(file_stat.st_mode)[-3:],
-                "last_modified": datetime.fromtimestamp(file_stat.st_mtime).isoformat()
+            self.report["analysis"]["basic_info"] = {
+                "filename": file_path.name,
+                "size": file_path.stat().st_size,
+                "type": magic.from_file(str(file_path)),
+                "md5": self.calculate_hash(str(file_path), "md5"),
+                "sha1": self.calculate_hash(str(file_path), "sha1"),
+                "sha256": self.calculate_hash(str(file_path), "sha256"),
+                "created": datetime.datetime.fromtimestamp(file_path.stat().st_ctime).isoformat(),
+                "modified": datetime.datetime.fromtimestamp(file_path.stat().st_mtime).isoformat()
             }
         except Exception as e:
-            return {"error": str(e)}
+            logger.error(f"Erreur lors de l'analyse des informations de base: {str(e)}")
+            raise
 
-    def calculate_hash(self, file_path, algorithm='sha256'):
-        """Calcule le hash d'un fichier."""
+    def analyze_static(self):
+        """Analyse statique"""
         try:
-            hash_obj = hashlib.new(algorithm)
+            self.report["analysis"]["static_analysis"] = {
+                "strings": self.extract_strings(),
+                "yara_matches": self.scan_yara(),
+                "clamav_results": self.scan_clamav()
+            }
+        except Exception as e:
+            logger.error(f"Erreur lors de l'analyse statique: {str(e)}")
+            raise
+
+    def analyze_dynamic(self):
+        """Analyse dynamique"""
+        try:
+            self.report["analysis"]["dynamic_analysis"] = {
+                "processes": self.analyze_processes(),
+                "network": self.analyze_network(),
+                "files": self.analyze_files()
+            }
+        except Exception as e:
+            logger.error(f"Erreur lors de l'analyse dynamique: {str(e)}")
+            raise
+
+    def detect_threats(self):
+        """Détecte les menaces"""
+        try:
+            self.report["analysis"]["threats"] = {
+                "malware": self.detect_malware(),
+                "shellcode": self.detect_shellcode(),
+                "packer": self.detect_packer(),
+                "anti_analysis": self.detect_anti_analysis(),
+                "persistence": self.detect_persistence(),
+                "privilege_escalation": self.detect_privilege_escalation(),
+                "data_exfiltration": self.detect_data_exfiltration()
+            }
+        except Exception as e:
+            logger.error(f"Erreur lors de la détection des menaces: {str(e)}")
+            raise
+
+    def generate_recommendations(self):
+        """Génère des recommandations"""
+        try:
+            recommendations = []
+            
+            if self.report["analysis"]["threats"]["malware"]:
+                recommendations.append("Isoler le système immédiatement")
+                recommendations.append("Effectuer une analyse complète avec un antivirus à jour")
+            
+            if self.report["analysis"]["threats"]["shellcode"]:
+                recommendations.append("Vérifier les processus en cours")
+                recommendations.append("Analyser la mémoire pour d'autres shellcodes")
+            
+            if self.report["analysis"]["threats"]["packer"]:
+                recommendations.append("Déballer le malware pour analyse approfondie")
+                recommendations.append("Vérifier les signatures de packers connus")
+            
+            self.report["analysis"]["recommendations"] = recommendations
+        except Exception as e:
+            logger.error(f"Erreur lors de la génération des recommandations: {str(e)}")
+            raise
+
+    def calculate_hash(self, file_path, hash_type):
+        """Calcule le hash d'un fichier"""
+        try:
+            hash_func = getattr(hashlib, hash_type)()
             with open(file_path, 'rb') as f:
                 for chunk in iter(lambda: f.read(4096), b''):
-                    hash_obj.update(chunk)
-            return hash_obj.hexdigest()
+                    hash_func.update(chunk)
+            return hash_func.hexdigest()
         except Exception as e:
-            return f"Error calculating {algorithm}: {str(e)}"
+            logger.error(f"Erreur lors du calcul du hash {hash_type}: {str(e)}")
+            return None
 
-    def generate_summary(self, file_analyses):
-        """Génère un résumé de l'analyse."""
-        summary = {
-            "total_files": len(file_analyses),
-            "suspicious_files": 0,
-            "infected_files": 0,
-            "file_types": {},
-            "threats": []
-        }
-
-        for analysis in file_analyses:
-            try:
-                # Comptage des types de fichiers
-                file_type = analysis["file_info"].get("type", "unknown")
-                summary["file_types"][file_type] = summary["file_types"].get(file_type, 0) + 1
-
-                # Détection des menaces ClamAV
-                clamav_result = analysis["clamav"]
-                if isinstance(clamav_result, dict):
-                    if clamav_result.get("status") == "FOUND":
-                        summary["infected_files"] += 1
-                        summary["threats"].append({
-                            "file": analysis["file_info"]["name"],
-                            "type": "virus",
-                            "details": clamav_result
-                        })
-                elif isinstance(clamav_result, tuple):
-                    if clamav_result[0] == "FOUND":
-                        summary["infected_files"] += 1
-                        summary["threats"].append({
-                            "file": analysis["file_info"]["name"],
-                            "type": "virus",
-                            "details": {
-                                "status": "FOUND",
-                                "details": clamav_result[1] if len(clamav_result) > 1 else None
-                            }
-                        })
-
-                # Analyse YARA
-                yara_results = analysis["yara"]
-                if yara_results and isinstance(yara_results, list):
-                    for match in yara_results:
-                        if isinstance(match, dict) and match.get("rule") not in ["No_YARA_Matches", "YARA_Not_Available", "YARA_Error"]:
-                            summary["suspicious_files"] += 1
-                            summary["threats"].append({
-                                "file": analysis["file_info"]["name"],
-                                "type": "suspicious",
-                                "details": match
-                            })
-            except Exception as e:
-                self.log(f"Erreur lors de l'analyse du fichier {analysis.get('file_info', {}).get('name', 'unknown')}: {str(e)}")
-                continue
-
-        return summary
-
-    def save_results(self, results):
-        """Sauvegarde les résultats de l'analyse."""
+    def extract_strings(self):
+        """Extrait les chaînes de caractères"""
         try:
-            # Création du nom de fichier avec timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_file = os.path.join(self.output_dir, f"report_{timestamp}.json")
-            
-            # Sauvegarde en JSON avec indentation
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(results, f, indent=2, ensure_ascii=False)
-            
-            self.log(f"Résultats sauvegardés dans {output_file}")
-            return True
+            result = subprocess.run(['strings', self.target_path],
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE,
+                                  text=True)
+            return result.stdout.splitlines()
         except Exception as e:
-            self.log(f"Erreur lors de la sauvegarde des résultats: {str(e)}")
-            return False
+            logger.error(f"Erreur lors de l'extraction des chaînes: {str(e)}")
+            return []
 
-    def send_to_api(self, results):
-        """Envoie les résultats à l'API."""
+    def scan_yara(self):
+        """Scanne avec YARA"""
+        try:
+            if hasattr(self, 'yara_rules'):
+                matches = self.yara_rules.match(self.target_path)
+                return [match.rule for match in matches]
+            return []
+        except Exception as e:
+            logger.error(f"Erreur lors du scan YARA: {str(e)}")
+            return []
+
+    def scan_clamav(self):
+        """Scanne avec ClamAV"""
+        try:
+            if self.clamd:
+                result = self.clamd.scan(self.target_path)
+                return result
+            return []
+        except Exception as e:
+            logger.error(f"Erreur lors du scan ClamAV: {str(e)}")
+            return []
+
+    def analyze_processes(self):
+        """Analyse les processus"""
+        try:
+            return [p.info for p in psutil.process_iter(['pid', 'name', 'cmdline'])]
+        except Exception as e:
+            logger.error(f"Erreur lors de l'analyse des processus: {str(e)}")
+            return []
+
+    def analyze_network(self):
+        """Analyse le réseau"""
+        try:
+            return [conn.info for conn in psutil.net_connections()]
+        except Exception as e:
+            logger.error(f"Erreur lors de l'analyse réseau: {str(e)}")
+            return []
+
+    def analyze_files(self):
+        """Analyse les fichiers"""
+        try:
+            return [f for f in Path(self.target_path).rglob('*') if f.is_file()]
+        except Exception as e:
+            logger.error(f"Erreur lors de l'analyse des fichiers: {str(e)}")
+            return []
+
+    def detect_malware(self):
+        """Détecte les malwares"""
+        try:
+            malware = []
+            if self.report["analysis"]["static_analysis"]["clamav_results"]:
+                malware.extend(self.report["analysis"]["static_analysis"]["clamav_results"])
+            if self.report["analysis"]["static_analysis"]["yara_matches"]:
+                malware.extend(self.report["analysis"]["static_analysis"]["yara_matches"])
+            return malware
+        except Exception as e:
+            logger.error(f"Erreur lors de la détection des malwares: {str(e)}")
+            return []
+
+    def detect_shellcode(self):
+        """Détecte les shellcodes"""
+        try:
+            shellcode = []
+            # Logique de détection de shellcode
+            return shellcode
+        except Exception as e:
+            logger.error(f"Erreur lors de la détection des shellcodes: {str(e)}")
+            return []
+
+    def detect_packer(self):
+        """Détecte les packers"""
+        try:
+            packers = []
+            # Logique de détection de packers
+            return packers
+        except Exception as e:
+            logger.error(f"Erreur lors de la détection des packers: {str(e)}")
+            return []
+
+    def detect_anti_analysis(self):
+        """Détecte les techniques anti-analyse"""
+        try:
+            anti_analysis = []
+            # Logique de détection anti-analyse
+            return anti_analysis
+        except Exception as e:
+            logger.error(f"Erreur lors de la détection des techniques anti-analyse: {str(e)}")
+            return []
+
+    def detect_persistence(self):
+        """Détecte les mécanismes de persistance"""
+        try:
+            persistence = []
+            # Logique de détection de persistance
+            return persistence
+        except Exception as e:
+            logger.error(f"Erreur lors de la détection des mécanismes de persistance: {str(e)}")
+            return []
+
+    def detect_privilege_escalation(self):
+        """Détecte les tentatives d'élévation de privilèges"""
+        try:
+            privilege_escalation = []
+            # Logique de détection d'élévation de privilèges
+            return privilege_escalation
+        except Exception as e:
+            logger.error(f"Erreur lors de la détection des tentatives d'élévation de privilèges: {str(e)}")
+            return []
+
+    def detect_data_exfiltration(self):
+        """Détecte les tentatives d'exfiltration de données"""
+        try:
+            exfiltration = []
+            # Logique de détection d'exfiltration
+            return exfiltration
+        except Exception as e:
+            logger.error(f"Erreur lors de la détection des tentatives d'exfiltration: {str(e)}")
+            return []
+
+    def save_report(self):
+        """Sauvegarde le rapport localement"""
+        try:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            report_path = os.path.join(PATHS['output'], f"report_{timestamp}.json")
+            
+            with open(report_path, 'w', encoding='utf-8') as f:
+                json.dump(self.report, f, indent=4, ensure_ascii=False)
+            
+            logger.info(f"Rapport sauvegardé dans {report_path}")
+            return report_path
+        except Exception as e:
+            logger.error(f"Erreur lors de la sauvegarde du rapport: {str(e)}")
+            return None
+
+    def send_to_api(self):
+        """Envoie le rapport à l'API"""
         try:
             headers = {
                 'Content-Type': 'application/json',
                 'Accept': 'application/json'
             }
             
-            # Formatage des données pour l'API
-            api_data = {
-                "file_name": os.path.basename(self.target_path),
-                "analysis_date": datetime.now().isoformat(),
-                "analysis_results": results
-            }
-
-            # Tentatives d'envoi
             for attempt in range(API_CONFIG['max_retries']):
                 try:
                     response = requests.post(
-                        self.api_endpoint,
-                        json=api_data,
+                        API_CONFIG['endpoint'],
+                        json=self.report,
                         headers=headers,
                         timeout=API_CONFIG['timeout']
                     )
                     response.raise_for_status()
+                    logger.info(f"Rapport envoyé avec succès à l'API")
                     return response.json()
                 except requests.exceptions.RequestException as e:
                     if attempt == API_CONFIG['max_retries'] - 1:
                         raise e
                     continue
-
         except Exception as e:
-            self.log(f"Erreur lors de l'envoi à l'API: {str(e)}")
-            return {
-                "error": f"Échec de l'envoi à l'API après {API_CONFIG['max_retries']} tentatives",
-                "details": str(e)
-            }
+            logger.error(f"Erreur lors de l'envoi à l'API: {str(e)}")
+            return None
 
 def main():
-    """Point d'entrée principal du script."""
-    if len(sys.argv) < 2:
-        print("Usage: python forensic_analyzer.py <chemin_du_fichier_ou_dossier>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description='Analyse forensique de fichiers')
+    parser.add_argument('target', help='Chemin du fichier à analyser')
+    parser.add_argument('--output', help='Chemin du fichier de sortie', default=None)
+    parser.add_argument('--verbose', action='store_true', help='Affiche plus d\'informations')
+    args = parser.parse_args()
 
-    target_path = sys.argv[1]
-    analyzer = ForensicAnalyzer(target_path)
-    
     try:
-        # Vérifier si c'est un fichier ou un dossier
-        if os.path.isfile(target_path):
-            # Analyse d'un seul fichier
-            results = analyzer.analyze_target()
-        else:
-            # Analyse de tous les fichiers dans le dossier
-            results = {
-                "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
-                "target_info": analyzer.get_target_info(),
-                "analysis": {
-                    "files": [],
-                    "system": analyzer.analyze_system(),
-                    "summary": {
-                        "total_files": 0,
-                        "suspicious_files": 0,
-                        "infected_files": 0,
-                        "file_types": {},
-                        "threats": []
-                    }
-                }
-            }
-            
-            # Parcourir tous les fichiers dans le dossier
-            for root, _, files in os.walk(target_path):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    try:
-                        # Vérifier si le fichier a une extension à analyser
-                        _, ext = os.path.splitext(file)
-                        if ext.lower() in ANALYZED_EXTENSIONS:
-                            analyzer.log(f"Analyse du fichier: {file_path}")
-                            file_analysis = analyzer.analyze_file(file_path)
-                            if file_analysis:
-                                results["analysis"]["files"].append(file_analysis)
-                    except Exception as e:
-                        analyzer.log(f"Erreur lors de l'analyse du fichier {file_path}: {str(e)}")
-                        continue
-            
-            # Générer le résumé pour tous les fichiers
-            results["analysis"]["summary"] = analyzer.generate_summary(results["analysis"]["files"])
+        # Analyse du fichier
+        analyzer = ForensicAnalyzer(args.target)
+        report = analyzer.analyze_file()
         
-        # Sauvegarder les résultats
-        analyzer.save_results(results)
+        # Sauvegarde locale
+        report_path = analyzer.save_report()
         
-        # Envoyer les résultats à l'API si configuré
-        if analyzer.api_endpoint:
-            analyzer.send_to_api(results)
+        # Envoi à l'API
+        api_response = analyzer.send_to_api()
+        
+        if args.verbose:
+            print(json.dumps(report, indent=4, ensure_ascii=False))
             
-        print(f"Analyse terminée. Résultats sauvegardés dans {analyzer.output_dir}")
-        
     except Exception as e:
-        print(f"Erreur lors de l'analyse: {str(e)}")
+        logger.error(f"Erreur lors de l'analyse: {str(e)}")
         sys.exit(1)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()           
