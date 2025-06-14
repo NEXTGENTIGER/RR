@@ -32,7 +32,7 @@ TOOL_PATHS = {
     'exiftool': '/usr/bin/exiftool',
     'fls': '/usr/bin/fls',
     'mmls': '/usr/bin/mmls',
-    'vol': '/usr/bin/vol'
+    'vol': shutil.which("volatility3") or '/usr/local/bin/volatility3'
 }
 
 # Extensions de fichiers à analyser
@@ -331,12 +331,18 @@ class ForensicAnalyzer:
     def setup_yara_rules(self):
         """Configure les règles YARA."""
         try:
-            # Compilation des règles intégrées
-            self.yara_rules = yara.compile(source=YARA_RULES)
-            print("Règles YARA chargées avec succès")
+            # Essayer de charger les règles externes
+            yara_file = os.path.join(self.rules_dir, "malware.yar")
+            if os.path.exists(yara_file):
+                self.yara_rules = yara.compile(filepath=yara_file)
+                print("Règles YARA externes chargées avec succès")
+            else:
+                raise FileNotFoundError(f"Fichier de règles YARA non trouvé: {yara_file}")
         except Exception as e:
-            print(f"Erreur lors du chargement des règles YARA: {e}")
-            self.yara_rules = None
+            print(f"Erreur lors du chargement des règles YARA externes: {e}")
+            # Charger les règles internes en secours
+            self.yara_rules = yara.compile(source=YARA_RULES)
+            print("Règles YARA internes chargées en secours")
 
     def scan_yara(self, file_path):
         """Analyse le fichier avec YARA."""
@@ -374,50 +380,86 @@ class ForensicAnalyzer:
             }
 
     def analyze_with_sleuthkit(self, file_path):
-        """Analyse avec SleuthKit."""
-        results = {}
-        
+        """Analyse un fichier avec Sleuthkit."""
         try:
-            # Analyse avec fls
-            fls_cmd = [TOOL_PATHS['fls'], '-r', file_path]
-            fls_result = self.execute_command(fls_cmd)
-            results['fls'] = fls_result
+            # Vérifier si c'est une image disque valide
+            _, ext = os.path.splitext(file_path)
+            if ext.lower() not in DISK_EXTENSIONS:
+                return {
+                    "success": False,
+                    "output": None,
+                    "error": f"Format de fichier non supporté pour l'analyse disque: {ext}"
+                }
 
-            # Analyse avec mmls
+            # Exécuter mmls pour obtenir la table des partitions
             mmls_cmd = [TOOL_PATHS['mmls'], file_path]
-            mmls_result = self.execute_command(mmls_cmd)
-            results['mmls'] = mmls_result
-        except Exception as e:
-            self.log(f"Erreur lors de l'analyse SleuthKit: {str(e)}")
-            results['error'] = str(e)
+            mmls_result = subprocess.run(mmls_cmd, capture_output=True, text=True)
+            
+            if mmls_result.returncode != 0:
+                return {
+                    "success": False,
+                    "output": None,
+                    "error": mmls_result.stderr
+                }
 
-        return results
+            # Exécuter fls pour lister les fichiers
+            fls_cmd = [TOOL_PATHS['fls'], file_path]
+            fls_result = subprocess.run(fls_cmd, capture_output=True, text=True)
+            
+            return {
+                "success": True,
+                "mmls_output": mmls_result.stdout,
+                "fls_output": fls_result.stdout,
+                "error": None
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "output": None,
+                "error": str(e)
+            }
 
     def analyze_with_volatility(self, file_path):
-        """Analyse avec Volatility."""
-        results = {}
-        
+        """Analyse un fichier avec Volatility."""
         try:
-            # Détection du profil
-            profile_cmd = [TOOL_PATHS['vol'], '-f', file_path, 'imageinfo']
-            profile_result = self.execute_command(profile_cmd)
-            results['profile'] = profile_result
+            if not os.path.exists(TOOL_PATHS['vol']):
+                return {
+                    "success": False,
+                    "output": None,
+                    "error": f"Volatility non trouvé à {TOOL_PATHS['vol']}"
+                }
 
-            if profile_result.get('success'):
-                # Analyse des processus
-                pslist_cmd = [TOOL_PATHS['vol'], '-f', file_path, '--profile', 'Win7SP1x64', 'pslist']
-                pslist_result = self.execute_command(pslist_cmd)
-                results['pslist'] = pslist_result
+            # Vérifier si c'est une image mémoire valide
+            _, ext = os.path.splitext(file_path)
+            if ext.lower() not in MEMORY_EXTENSIONS:
+                return {
+                    "success": False,
+                    "output": None,
+                    "error": f"Format de fichier non supporté pour l'analyse mémoire: {ext}"
+                }
 
-                # Analyse des connexions réseau
-                netscan_cmd = [TOOL_PATHS['vol'], '-f', file_path, '--profile', 'Win7SP1x64', 'netscan']
-                netscan_result = self.execute_command(netscan_cmd)
-                results['netscan'] = netscan_result
+            # Exécuter Volatility
+            cmd = [TOOL_PATHS['vol'], '-f', file_path, 'windows.info.Info']
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                return {
+                    "success": True,
+                    "output": result.stdout,
+                    "error": None
+                }
+            else:
+                return {
+                    "success": False,
+                    "output": None,
+                    "error": result.stderr
+                }
         except Exception as e:
-            self.log(f"Erreur lors de l'analyse Volatility: {str(e)}")
-            results['error'] = str(e)
-
-        return results
+            return {
+                "success": False,
+                "output": None,
+                "error": str(e)
+            }
 
     def analyze_target(self):
         """Analyse le chemin cible (fichier ou répertoire)."""
@@ -498,13 +540,43 @@ class ForensicAnalyzer:
             return "000"
 
     def analyze_system(self):
-        """Analyse le système hôte."""
-        return {
+        """Analyse le système."""
+        system_info = {
             "os_info": self.get_os_info(),
-            "disk_info": self.analyze_with_sleuthkit("/host"),
-            "memory_info": self.analyze_with_volatility("/host"),
+            "disk_info": {},
+            "memory_info": {},
             "network_info": self.get_network_info()
         }
+
+        # Vérifier si /host est un fichier image valide
+        host_path = "/host"
+        if os.path.exists(host_path):
+            if os.path.isfile(host_path):
+                # Vérifier si c'est une image disque ou mémoire
+                _, ext = os.path.splitext(host_path)
+                if ext.lower() in DISK_EXTENSIONS:
+                    system_info["disk_info"] = self.analyze_with_sleuthkit(host_path)
+                elif ext.lower() in MEMORY_EXTENSIONS:
+                    system_info["memory_info"] = self.analyze_with_volatility(host_path)
+                else:
+                    system_info["disk_info"] = {"error": f"Format de fichier non supporté: {ext}"}
+            else:
+                # C'est un dossier, chercher des fichiers image
+                for root, _, files in os.walk(host_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        _, ext = os.path.splitext(file)
+                        if ext.lower() in DISK_EXTENSIONS:
+                            system_info["disk_info"] = self.analyze_with_sleuthkit(file_path)
+                            break
+                        elif ext.lower() in MEMORY_EXTENSIONS:
+                            system_info["memory_info"] = self.analyze_with_volatility(file_path)
+                            break
+        else:
+            system_info["disk_info"] = {"error": "Aucune image disque trouvée dans /host"}
+            system_info["memory_info"] = {"error": "Aucune image mémoire trouvée dans /host"}
+
+        return system_info
 
     def get_os_info(self):
         """Récupère les informations sur le système d'exploitation."""
@@ -677,16 +749,68 @@ class ForensicAnalyzer:
             }
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python forensic_analyzer.py <target_path>")
+    """Point d'entrée principal du script."""
+    if len(sys.argv) < 2:
+        print("Usage: python forensic_analyzer.py <chemin_du_fichier_ou_dossier>")
         sys.exit(1)
 
     target_path = sys.argv[1]
     analyzer = ForensicAnalyzer(target_path)
-    results = analyzer.analyze_target()
     
-    # Affichage des résultats
-    print(json.dumps(results, indent=2, ensure_ascii=False))
+    try:
+        # Vérifier si c'est un fichier ou un dossier
+        if os.path.isfile(target_path):
+            # Analyse d'un seul fichier
+            results = analyzer.analyze_target()
+        else:
+            # Analyse de tous les fichiers dans le dossier
+            results = {
+                "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
+                "target_info": analyzer.get_target_info(),
+                "analysis": {
+                    "files": [],
+                    "system": analyzer.analyze_system(),
+                    "summary": {
+                        "total_files": 0,
+                        "suspicious_files": 0,
+                        "infected_files": 0,
+                        "file_types": {},
+                        "threats": []
+                    }
+                }
+            }
+            
+            # Parcourir tous les fichiers dans le dossier
+            for root, _, files in os.walk(target_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    try:
+                        # Vérifier si le fichier a une extension à analyser
+                        _, ext = os.path.splitext(file)
+                        if ext.lower() in ANALYZED_EXTENSIONS:
+                            analyzer.log(f"Analyse du fichier: {file_path}")
+                            file_analysis = analyzer.analyze_file(file_path)
+                            if file_analysis:
+                                results["analysis"]["files"].append(file_analysis)
+                    except Exception as e:
+                        analyzer.log(f"Erreur lors de l'analyse du fichier {file_path}: {str(e)}")
+                        continue
+            
+            # Générer le résumé pour tous les fichiers
+            results["analysis"]["summary"] = analyzer.generate_summary(results["analysis"]["files"])
+        
+        # Sauvegarder les résultats
+        analyzer.save_results(results)
+        
+        # Envoyer les résultats à l'API si configuré
+        if analyzer.api_endpoint:
+            analyzer.send_to_api(results)
+            
+        print(f"Analyse terminée. Résultats sauvegardés dans {analyzer.output_dir}")
+        
+    except Exception as e:
+        print(f"Erreur lors de l'analyse: {str(e)}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()           
