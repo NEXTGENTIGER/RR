@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  forensic-analyzer:
+    build: .
+    container_name: forensic-analyzer
+    volumes:
+      - ./input:/app/input
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./rules:/app/rules
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=UTC
+    tty: true
+    stdin_open: true
+    command: tail -f /dev/null
+    restart: "no" 
