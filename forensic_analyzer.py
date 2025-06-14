@@ -282,7 +282,20 @@ class ForensicAnalyzer:
                 self.log(f"Erreur lors de l'analyse SleuthKit: {str(e)}")
                 results['error'] = str(e)
         else:
-            results['status'] = "Not a disk image"
+            # Si ce n'est pas une image disque, essayer d'analyser le disque hôte
+            try:
+                # Analyse du disque système
+                fls_cmd = ['fls', '-r', '/host/dev/sda']
+                fls_result = self.execute_command(fls_cmd)
+                results['host_disk_fls'] = fls_result
+
+                # Analyse de la table de partition
+                mmls_cmd = ['mmls', '/host/dev/sda']
+                mmls_result = self.execute_command(mmls_cmd)
+                results['host_disk_mmls'] = mmls_result
+            except Exception as e:
+                self.log(f"Erreur lors de l'analyse du disque hôte: {str(e)}")
+                results['host_disk_error'] = str(e)
 
         return results
 
@@ -311,7 +324,15 @@ class ForensicAnalyzer:
                 self.log(f"Erreur lors de l'analyse Volatility: {str(e)}")
                 results['error'] = str(e)
         else:
-            results['status'] = "Not a memory dump"
+            # Si ce n'est pas un dump mémoire, essayer d'analyser la mémoire hôte
+            try:
+                # Analyse de la mémoire système
+                mem_cmd = ['vol', '-f', '/host/proc/kcore', 'imageinfo']
+                mem_result = self.execute_command(mem_cmd)
+                results['host_memory'] = mem_result
+            except Exception as e:
+                self.log(f"Erreur lors de l'analyse de la mémoire hôte: {str(e)}")
+                results['host_memory_error'] = str(e)
 
         return results
 
