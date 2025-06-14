@@ -188,28 +188,51 @@ class ForensicAnalyzer:
 
     def setup_directories(self):
         """Crée les répertoires nécessaires."""
-        for directory in [self.output_dir, self.log_dir, self.rules_dir]:
-            os.makedirs(directory, exist_ok=True)
+        try:
+            for directory in [self.output_dir, self.log_dir, self.rules_dir]:
+                os.makedirs(directory, exist_ok=True)
+        except Exception as e:
+            print(f"Erreur lors de la création des répertoires: {str(e)}")
+            sys.exit(1)
 
     def setup_logging(self):
         """Configure la journalisation."""
-        self.log_file = os.path.join(self.log_dir, f"forensic_analyzer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
-        with open(self.log_file, 'w') as f:
-            f.write(f"=== Début de l'analyse: {datetime.now().strftime('%Y%m%d_%H%M%S')} ===\n")
+        try:
+            self.log_file = os.path.join(self.log_dir, f"forensic_analyzer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+            with open(self.log_file, 'w') as f:
+                f.write(f"=== Début de l'analyse: {datetime.now().strftime('%Y%m%d_%H%M%S')} ===\n")
+        except Exception as e:
+            print(f"Erreur lors de la configuration de la journalisation: {str(e)}")
+            sys.exit(1)
 
     def log(self, message):
         """Écrit un message dans le fichier de log."""
-        with open(self.log_file, 'a') as f:
-            f.write(f"{datetime.now()}: {message}\n")
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(self.log_file, 'a') as f:
+                f.write(f"[{timestamp}] {message}\n")
+        except Exception as e:
+            print(f"Erreur lors de l'écriture dans le log: {str(e)}")
 
     def execute_command(self, command):
-        """Exécute une commande et retourne sa sortie."""
+        """Exécute une commande système."""
         try:
-            result = subprocess.run(command, capture_output=True, text=True)
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=True
+            )
             return {
-                "success": result.returncode == 0,
+                "success": True,
                 "output": result.stdout,
-                "error": result.stderr if result.returncode != 0 else None
+                "error": None
+            }
+        except subprocess.CalledProcessError as e:
+            return {
+                "success": False,
+                "output": e.stdout,
+                "error": e.stderr
             }
         except Exception as e:
             return {
@@ -406,14 +429,47 @@ class ForensicAnalyzer:
 
     def get_target_info(self):
         """Récupère les informations sur la cible."""
-        info = {
-            "path": self.target_path,
-            "type": "directory" if os.path.isdir(self.target_path) else "file",
-            "size": self.get_size(self.target_path),
-            "permissions": self.get_permissions(self.target_path),
-            "last_modified": datetime.fromtimestamp(os.path.getmtime(self.target_path)).isoformat()
-        }
-        return info
+        try:
+            info = {
+                "path": self.target_path,
+                "type": "directory" if os.path.isdir(self.target_path) else "file",
+                "size": self.get_size(self.target_path),
+                "permissions": self.get_permissions(self.target_path),
+                "last_modified": datetime.fromtimestamp(os.path.getmtime(self.target_path)).isoformat()
+            }
+            return info
+        except Exception as e:
+            self.log(f"Erreur lors de la récupération des informations sur la cible: {str(e)}")
+            return {
+                "path": self.target_path,
+                "error": str(e)
+            }
+
+    def get_size(self, path):
+        """Calcule la taille d'un fichier ou d'un répertoire."""
+        try:
+            if os.path.isfile(path):
+                return os.path.getsize(path)
+            elif os.path.isdir(path):
+                total_size = 0
+                for dirpath, _, filenames in os.walk(path):
+                    for f in filenames:
+                        fp = os.path.join(dirpath, f)
+                        if os.path.exists(fp):
+                            total_size += os.path.getsize(fp)
+                return total_size
+            return 0
+        except Exception as e:
+            self.log(f"Erreur lors du calcul de la taille: {str(e)}")
+            return 0
+
+    def get_permissions(self, path):
+        """Récupère les permissions d'un fichier ou d'un répertoire."""
+        try:
+            return oct(os.stat(path).st_mode)[-3:]
+        except Exception as e:
+            self.log(f"Erreur lors de la récupération des permissions: {str(e)}")
+            return "000"
 
     def analyze_system(self):
         """Analyse le système hôte."""
