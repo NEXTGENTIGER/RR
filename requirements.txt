@@ -1,0 +1,6 @@
+requests==2.31.0
+python-magic==0.4.27
+yara-python==4.3.1
+python-clamd==0.4.1
+exiftool>=0.5.5
+pathlib>=1.0.1 
