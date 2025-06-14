@@ -5,7 +5,7 @@ FROM python:3.9-slim
 RUN apt-get update && apt-get install -y \
     clamav \
     clamav-daemon \
-    freshclam \
+    clamav-freshclam \
     yara \
     exiftool \
     sleuthkit \
@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     libyara-dev \
     git \
+    netcat-traditional \
     && rm -rf /var/lib/apt/lists/*
 
 # Configuration du répertoire de travail
@@ -52,4 +53,4 @@ COPY start.sh /start.sh
 RUN chmod +x /start.sh
 
 # Commande par défaut
-CMD ["/start.sh"] 
+CMD ["/start.sh"]
