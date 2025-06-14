@@ -1,15 +1,5 @@
-sudo apt-get update
-sudo apt-get install -y \
-    python3-requests \
-    python3-magic \
-    python3-yara \
-    python3-clamd \
-    python3-exiftool \
-    clamav \
-    clamav-daemon \
-    yara \
-    exiftool \
-    sleuthkit \
-    libmagic1 \
-    python3-dev \
-    libyara-dev
+requests
+python-magic
+yara-python
+python-clamd
+
