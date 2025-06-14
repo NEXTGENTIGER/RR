@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     libmagic1 \
     python3-dev \
     libyara-dev \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Configuration du répertoire de travail
@@ -21,9 +22,7 @@ RUN pip install --no-cache-dir \
     requests \
     python-magic \
     yara-python \
-    python-clamd \
-    exiftool \
-    pathlib
+    git+https://github.com/graingert/python-clamd.git
 
 # Copie du script principal
 COPY forensic_analyzer.py .
