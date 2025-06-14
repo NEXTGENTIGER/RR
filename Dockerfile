@@ -45,3 +45,4 @@ ENV PYTHONUNBUFFERED=1
 ENV TZ=UTC
 
 CMD ["sh", "-c", "freshclam && service clamav-daemon start && sleep 5 && python forensic_analyzer.py /app/input"]
+
