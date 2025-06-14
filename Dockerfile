@@ -1,7 +1,7 @@
 # Utilisation d'une image Python officielle
 FROM python:3.9-slim
 
-# Installation des dépendances système nécessaires
+# Installation des dépendances système
 RUN apt-get update && apt-get install -y \
     clamav \
     clamav-daemon \
@@ -13,15 +13,20 @@ RUN apt-get update && apt-get install -y \
     libyara-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Création du répertoire de travail
+# Configuration du répertoire de travail
 WORKDIR /app
 
-# Copie des fichiers nécessaires
-COPY requirements.txt .
-COPY forensic_analyzer.py .
-
 # Installation des dépendances Python
-RUN pip install --no-cache-dir requests python-magic yara-python python-clamd exiftool pathlib
+RUN pip install --no-cache-dir \
+    requests \
+    python-magic \
+    yara-python \
+    python-clamd \
+    exiftool \
+    pathlib
+
+# Copie du script principal
+COPY forensic_analyzer.py .
 
 # Création des répertoires nécessaires
 RUN mkdir -p /app/logs /app/output /app/input /app/rules
