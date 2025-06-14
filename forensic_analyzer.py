@@ -64,12 +64,12 @@ rule Suspicious_Strings {
         2 of them
 }
 
-rule Suspicious_IP {
+rule Suspicious_IP_Address {
     meta:
         description = "Détecte les adresses IP suspectes"
         severity = "MEDIUM"
     strings:
-        $ip = /(?:[0-9]{1,3}\.){3}[0-9]{1,3}/
+        $ip = /[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}/
     condition:
         $ip
 }
@@ -228,6 +228,8 @@ class ForensicAnalyzer:
         
         try:
             result = self.clamd_client.scan(self.file_path)
+            if not result:
+                return {"status": "No threats found", "details": "File is clean"}
             return result.get(self.file_path, {})
         except Exception as e:
             self.log(f"Erreur lors de l'analyse ClamAV: {str(e)}")
@@ -248,19 +250,35 @@ class ForensicAnalyzer:
         try:
             if self.yara_rules:
                 matches = self.yara_rules.match(self.file_path)
+                if not matches:
+                    return [{"rule": "No_YARA_Matches", "meta": {"description": "No suspicious patterns found"}}]
                 return [{
                     'rule': match.rule,
                     'meta': match.meta,
                     'strings': [str(s) for s in match.strings]
                 } for match in matches]
-            return []
+            return [{"rule": "YARA_Not_Available", "meta": {"description": "YARA rules not loaded"}}]
         except Exception as e:
             self.log(f"Erreur lors de l'analyse YARA: {str(e)}")
-            return []
+            return [{"rule": "YARA_Error", "meta": {"description": str(e)}}]
 
     def get_exif_data(self):
         """Récupère les métadonnées EXIF avec exiftool."""
-        return self.execute_command(['exiftool', '-j', self.file_path])
+        try:
+            result = self.execute_command(['exiftool', '-j', self.file_path])
+            if not result.get('success'):
+                return {
+                    "success": False,
+                    "output": "No EXIF data found",
+                    "error": result.get('error', 'Unknown error')
+                }
+            return result
+        except Exception as e:
+            return {
+                "success": False,
+                "output": None,
+                "error": str(e)
+            }
 
     def analyze_with_sleuthkit(self):
         """Analyse avec SleuthKit."""
@@ -297,6 +315,8 @@ class ForensicAnalyzer:
                 self.log(f"Erreur lors de l'analyse du disque hôte: {str(e)}")
                 results['host_disk_error'] = str(e)
 
+        if not results:
+            results['status'] = "No disk analysis possible"
         return results
 
     def analyze_with_volatility(self):
@@ -334,6 +354,8 @@ class ForensicAnalyzer:
                 self.log(f"Erreur lors de l'analyse de la mémoire hôte: {str(e)}")
                 results['host_memory_error'] = str(e)
 
+        if not results:
+            results['status'] = "No memory analysis possible"
         return results
 
     def send_to_api(self, report_data: Dict[str, Any]) -> Dict[str, Any]:
