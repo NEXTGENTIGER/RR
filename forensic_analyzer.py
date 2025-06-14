@@ -12,6 +12,7 @@ import logging
 import zipfile
 import platform
 import sys
+import time
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Set
 from json import JSONEncoder
@@ -22,6 +23,16 @@ API_CONFIG = {
     'endpoint': 'http://127.0.0.1:5000/api/v1/report/upload_json/',
     'timeout': 30,
     'max_retries': 3
+}
+
+# Chemins des outils
+TOOL_PATHS = {
+    'clamd_socket': '/var/run/clamav/clamd.sock',
+    'clamd_tcp': 'localhost:3310',
+    'exiftool': '/usr/bin/exiftool',
+    'fls': '/usr/bin/fls',
+    'mmls': '/usr/bin/mmls',
+    'vol': '/usr/bin/vol'
 }
 
 # Extensions de fichiers à analyser
@@ -174,18 +185,8 @@ class ForensicAnalyzer:
         self.setup_directories()
         self.setup_logging()
         self.setup_yara_rules()
+        self.setup_clamav()
         
-        # Initialisation de ClamAV
-        self.clamd_client = None
-        try:
-            import clamd
-            self.clamd_client = clamd.ClamdUnixSocket()
-            self.clamd_client.ping()
-            print("ClamAV est connecté et prêt")
-        except Exception as e:
-            print(f"Warning: ClamAV not available: {e}")
-            self.clamd_client = None
-
     def setup_directories(self):
         """Crée les répertoires nécessaires."""
         try:
@@ -214,19 +215,63 @@ class ForensicAnalyzer:
         except Exception as e:
             print(f"Erreur lors de l'écriture dans le log: {str(e)}")
 
+    def setup_clamav(self):
+        """Configure et initialise ClamAV."""
+        self.clamd_client = None
+        max_retries = 5
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                import clamd
+                # Essai d'abord la connexion socket
+                try:
+                    self.clamd_client = clamd.ClamdUnixSocket(TOOL_PATHS['clamd_socket'])
+                    self.clamd_client.ping()
+                    print("ClamAV est connecté via socket")
+                    return
+                except:
+                    # Si le socket échoue, essayer TCP
+                    self.clamd_client = clamd.ClamdNetworkSocket(
+                        host='localhost',
+                        port=3310,
+                        timeout=30
+                    )
+                    self.clamd_client.ping()
+                    print("ClamAV est connecté via TCP")
+                    return
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"Tentative {attempt + 1}/{max_retries} de connexion à ClamAV échouée: {e}")
+                    time.sleep(retry_delay)
+                else:
+                    print(f"Warning: ClamAV not available after {max_retries} attempts: {e}")
+                    self.clamd_client = None
+
     def execute_command(self, command):
         """Exécute une commande système."""
         try:
+            # Vérification de l'existence des outils
+            if command[0] in TOOL_PATHS:
+                command[0] = TOOL_PATHS[command[0]]
+            
             result = subprocess.run(
                 command,
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                timeout=300  # 5 minutes timeout
             )
             return {
                 "success": True,
                 "output": result.stdout,
                 "error": None
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "success": False,
+                "output": None,
+                "error": f"Commande timeout après 5 minutes: {' '.join(command)}"
             }
         except subprocess.CalledProcessError as e:
             return {
@@ -262,13 +307,26 @@ class ForensicAnalyzer:
             return {"status": "ClamAV scanning disabled - daemon not available"}
         
         try:
+            # Vérification de la taille du fichier
+            file_size = os.path.getsize(file_path)
+            if file_size > 100 * 1024 * 1024:  # 100MB
+                return {"status": "SKIPPED", "details": "File too large for ClamAV scan"}
+            
             result = self.clamd_client.scan(file_path)
             if not result:
                 return {"status": "No threats found", "details": "File is clean"}
-            return result.get(file_path, {})
+            
+            # Conversion du résultat en format dictionnaire
+            scan_result = result.get(file_path, {})
+            if isinstance(scan_result, tuple):
+                return {
+                    "status": "FOUND" if scan_result[0] == "FOUND" else "OK",
+                    "details": scan_result[1] if len(scan_result) > 1 else None
+                }
+            return scan_result
         except Exception as e:
             self.log(f"Erreur lors de l'analyse ClamAV: {str(e)}")
-            return {"error": str(e)}
+            return {"status": "ERROR", "error": str(e)}
 
     def setup_yara_rules(self):
         """Configure les règles YARA."""
@@ -300,7 +358,7 @@ class ForensicAnalyzer:
     def get_exif_data(self, file_path):
         """Récupère les métadonnées EXIF avec exiftool."""
         try:
-            result = self.execute_command(['exiftool', '-j', file_path])
+            result = self.execute_command([TOOL_PATHS['exiftool'], '-j', file_path])
             if not result.get('success'):
                 return {
                     "success": False,
@@ -319,78 +377,46 @@ class ForensicAnalyzer:
         """Analyse avec SleuthKit."""
         results = {}
         
-        # Vérification si c'est une image disque
-        if any(file_path.lower().endswith(ext) for ext in DISK_EXTENSIONS):
-            try:
-                # Analyse avec fls
-                fls_cmd = ['fls', '-r', file_path]
-                fls_result = self.execute_command(fls_cmd)
-                results['fls'] = fls_result
+        try:
+            # Analyse avec fls
+            fls_cmd = [TOOL_PATHS['fls'], '-r', file_path]
+            fls_result = self.execute_command(fls_cmd)
+            results['fls'] = fls_result
 
-                # Analyse avec mmls
-                mmls_cmd = ['mmls', file_path]
-                mmls_result = self.execute_command(mmls_cmd)
-                results['mmls'] = mmls_result
-            except Exception as e:
-                self.log(f"Erreur lors de l'analyse SleuthKit: {str(e)}")
-                results['error'] = str(e)
-        else:
-            # Si ce n'est pas une image disque, essayer d'analyser le disque hôte
-            try:
-                # Analyse du disque système
-                fls_cmd = ['fls', '-r', '/host/dev/sda']
-                fls_result = self.execute_command(fls_cmd)
-                results['host_disk_fls'] = fls_result
+            # Analyse avec mmls
+            mmls_cmd = [TOOL_PATHS['mmls'], file_path]
+            mmls_result = self.execute_command(mmls_cmd)
+            results['mmls'] = mmls_result
+        except Exception as e:
+            self.log(f"Erreur lors de l'analyse SleuthKit: {str(e)}")
+            results['error'] = str(e)
 
-                # Analyse de la table de partition
-                mmls_cmd = ['mmls', '/host/dev/sda']
-                mmls_result = self.execute_command(mmls_cmd)
-                results['host_disk_mmls'] = mmls_result
-            except Exception as e:
-                self.log(f"Erreur lors de l'analyse du disque hôte: {str(e)}")
-                results['host_disk_error'] = str(e)
-
-        if not results:
-            results['status'] = "No disk analysis possible"
         return results
 
     def analyze_with_volatility(self, file_path):
         """Analyse avec Volatility."""
         results = {}
         
-        # Vérification si c'est un dump mémoire
-        if any(file_path.lower().endswith(ext) for ext in MEMORY_EXTENSIONS):
-            try:
-                # Détection du profil
-                profile_cmd = ['vol', '-f', file_path, 'imageinfo']
-                profile_result = self.execute_command(profile_cmd)
-                results['profile'] = profile_result
+        try:
+            # Détection du profil
+            profile_cmd = [TOOL_PATHS['vol'], '-f', file_path, 'imageinfo']
+            profile_result = self.execute_command(profile_cmd)
+            results['profile'] = profile_result
 
+            if profile_result.get('success'):
                 # Analyse des processus
-                pslist_cmd = ['vol', '-f', file_path, '--profile', 'Win7SP1x64', 'pslist']
+                pslist_cmd = [TOOL_PATHS['vol'], '-f', file_path, '--profile', 'Win7SP1x64', 'pslist']
                 pslist_result = self.execute_command(pslist_cmd)
                 results['pslist'] = pslist_result
 
                 # Analyse des connexions réseau
-                netscan_cmd = ['vol', '-f', file_path, '--profile', 'Win7SP1x64', 'netscan']
+                netscan_cmd = [TOOL_PATHS['vol'], '-f', file_path, '--profile', 'Win7SP1x64', 'netscan']
                 netscan_result = self.execute_command(netscan_cmd)
                 results['netscan'] = netscan_result
-            except Exception as e:
-                self.log(f"Erreur lors de l'analyse Volatility: {str(e)}")
-                results['error'] = str(e)
-        else:
-            # Si ce n'est pas un dump mémoire, essayer d'analyser la mémoire hôte
-            try:
-                # Analyse de la mémoire système
-                mem_cmd = ['vol', '-f', '/host/proc/kcore', 'imageinfo']
-                mem_result = self.execute_command(mem_cmd)
-                results['host_memory'] = mem_result
-            except Exception as e:
-                self.log(f"Erreur lors de l'analyse de la mémoire hôte: {str(e)}")
-                results['host_memory_error'] = str(e)
+        except Exception as e:
+            self.log(f"Erreur lors de l'analyse Volatility: {str(e)}")
+            results['error'] = str(e)
 
-        if not results:
-            results['status'] = "No memory analysis possible"
         return results
 
     def analyze_target(self):
@@ -556,22 +582,26 @@ class ForensicAnalyzer:
             summary["file_types"][file_type] = summary["file_types"].get(file_type, 0) + 1
 
             # Détection des menaces
-            if analysis["clamav"].get("status") == "FOUND":
+            clamav_result = analysis["clamav"]
+            if isinstance(clamav_result, dict) and clamav_result.get("status") == "FOUND":
                 summary["infected_files"] += 1
                 summary["threats"].append({
                     "file": analysis["file_info"]["name"],
                     "type": "virus",
-                    "details": analysis["clamav"]
+                    "details": clamav_result
                 })
 
-            if analysis["yara"]:
-                summary["suspicious_files"] += 1
-                for match in analysis["yara"]:
-                    summary["threats"].append({
-                        "file": analysis["file_info"]["name"],
-                        "type": "suspicious",
-                        "details": match
-                    })
+            # Analyse YARA
+            yara_results = analysis["yara"]
+            if yara_results and isinstance(yara_results, list):
+                for match in yara_results:
+                    if match.get("rule") not in ["No_YARA_Matches", "YARA_Not_Available", "YARA_Error"]:
+                        summary["suspicious_files"] += 1
+                        summary["threats"].append({
+                            "file": analysis["file_info"]["name"],
+                            "type": "suspicious",
+                            "details": match
+                        })
 
         return summary
 
