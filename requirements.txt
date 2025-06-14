@@ -1,4 +1,0 @@
-requests
-python-magic
-yara-python
-git+https://github.com/gjmr/pyClamd.git
