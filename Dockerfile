@@ -1,4 +1,3 @@
-# Utilisation d'une image Debian stable
 FROM debian:bullseye-slim
 
 # Installation de Python et des dépendances système
@@ -21,14 +20,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Configuration du répertoire de travail
 WORKDIR /app
 
-# Installation des dépendances Python
+# Installation des dépendances Python (avec remplacement de pycrypto par pycryptodome)
 RUN pip3 install --no-cache-dir \
     requests \
     python-magic \
     yara-python \
     git+https://github.com/graingert/python-clamd.git@master \
     distorm3 \
-    pycrypto \
+    pycryptodome \
     pefile \
     capstone \
     volatility3
@@ -84,4 +83,4 @@ ls -la /app\n\
 ls -la /var/run/clamav\n' > /app/check_env.sh && chmod +x /app/check_env.sh
 
 # Commande par défaut
-CMD ["sh", "-c", "/app/check_env.sh && service clamav-daemon start && sleep 3 && python3 forensic_analyzer.py /app/input"] 
+CMD ["sh", "-c", "/app/check_env.sh && clamd & sleep 5 && python3 forensic_analyzer.py /app/input"]
