@@ -17,6 +17,56 @@ from typing import Dict, Any, Optional, List, Set
 from json import JSONEncoder
 from pathlib import Path
 
+# Règles YARA de base
+YARA_RULES = """
+rule Suspicious_Executable {
+    meta:
+        description = "Détecte les fichiers exécutables suspects"
+        severity = "HIGH"
+    strings:
+        $mz = "MZ"
+        $pe = "PE"
+        $exe = ".exe"
+    condition:
+        $mz at 0 and $pe and $exe
+}
+
+rule Malicious_Shellcode {
+    meta:
+        description = "Détecte les shellcodes malveillants"
+        severity = "HIGH"
+    strings:
+        $shellcode1 = { 90 90 90 90 90 90 90 90 }  // NOP sled
+        $shellcode2 = { 68 ?? ?? ?? ?? C3 }        // PUSH + RET
+    condition:
+        any of them
+}
+
+rule Suspicious_Strings {
+    meta:
+        description = "Détecte les chaînes de caractères suspectes"
+        severity = "MEDIUM"
+    strings:
+        $cmd = "cmd.exe" nocase
+        $powershell = "powershell" nocase
+        $wget = "wget" nocase
+        $curl = "curl" nocase
+        $download = "download" nocase
+    condition:
+        2 of them
+}
+
+rule Suspicious_IP {
+    meta:
+        description = "Détecte les adresses IP suspectes"
+        severity = "MEDIUM"
+    strings:
+        $ip = /(?:[0-9]{1,3}\.){3}[0-9]{1,3}/
+    condition:
+        $ip
+}
+"""
+
 # Détection du système d'exploitation
 IS_WINDOWS = platform.system() == "Windows"
 IS_LINUX = platform.system() == "Linux"
@@ -102,6 +152,7 @@ class ForensicAnalyzer:
         self.rules_dir = "/app/rules"
         self.setup_directories()
         self.setup_logging()
+        self.setup_yara_rules()
         
         # Initialisation de ClamAV
         self.clamd_client = None
@@ -174,17 +225,27 @@ class ForensicAnalyzer:
             self.log(f"Erreur lors de l'analyse ClamAV: {str(e)}")
             return {"error": str(e)}
 
+    def setup_yara_rules(self):
+        """Configure les règles YARA."""
+        try:
+            # Compilation des règles intégrées
+            self.yara_rules = yara.compile(source=YARA_RULES)
+            print("Règles YARA chargées avec succès")
+        except Exception as e:
+            print(f"Erreur lors du chargement des règles YARA: {e}")
+            self.yara_rules = None
+
     def scan_yara(self):
         """Analyse le fichier avec YARA."""
         try:
-            rules_path = os.path.join(self.rules_dir, "malware.yar")
-            if os.path.exists(rules_path):
-                rules = yara.compile(filepath=rules_path)
-                matches = rules.match(self.file_path)
-                return [match.rule for match in matches]
-            else:
-                self.log("Aucun fichier de règles YARA trouvé")
-                return []
+            if self.yara_rules:
+                matches = self.yara_rules.match(self.file_path)
+                return [{
+                    'rule': match.rule,
+                    'meta': match.meta,
+                    'strings': [str(s) for s in match.strings]
+                } for match in matches]
+            return []
         except Exception as e:
             self.log(f"Erreur lors de l'analyse YARA: {str(e)}")
             return []
