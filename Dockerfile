@@ -1,4 +1,3 @@
-# Utilisation d'une image Python officielle
 FROM python:3.9-slim
 
 # Installation des dépendances système
@@ -13,10 +12,9 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     libyara-dev \
     git \
-    netcat-traditional \
     && rm -rf /var/lib/apt/lists/*
 
-# Configuration du répertoire de travail
+# Dossier de travail
 WORKDIR /app
 
 # Installation des dépendances Python
@@ -24,7 +22,7 @@ RUN pip install --no-cache-dir \
     requests \
     python-magic \
     yara-python \
-    git+https://github.com/graingert/python-clamd.git
+    git+https://github.com/graingert/python-clamd.git@master
 
 # Copie du script principal
 COPY forensic_analyzer.py .
@@ -36,21 +34,12 @@ RUN mkdir -p /app/logs /app/output /app/input /app/rules
 RUN mkdir -p /var/run/clamav && \
     chown clamav:clamav /var/run/clamav && \
     chmod 750 /var/run/clamav && \
-    # Configuration du socket ClamAV
-    echo "TCPSocket 3310" >> /etc/clamav/clamd.conf && \
-    echo "TCPAddr 0.0.0.0" >> /etc/clamav/clamd.conf && \
-    echo "LocalSocket /var/run/clamav/clamd.sock" >> /etc/clamav/clamd.conf && \
-    # Mise à jour des signatures
-    freshclam && \
+    freshclam || true && \
     chown -R clamav:clamav /var/lib/clamav
 
 # Variables d'environnement
 ENV PYTHONUNBUFFERED=1
 ENV TZ=UTC
 
-# Script de démarrage
-COPY start.sh /start.sh
-RUN chmod +x /start.sh
-
 # Commande par défaut
-CMD ["/start.sh"] 
+CMD ["python", "forensic_analyzer.py"]
