@@ -1,7 +1,11 @@
-FROM python:3.9-slim
+# Utilisation d'une image Debian stable
+FROM debian:bullseye-slim
 
-# Installation des dépendances système
+# Installation de Python et des dépendances système
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-dev \
     clamav \
     clamav-daemon \
     clamav-freshclam \
@@ -9,7 +13,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     exiftool \
     sleuthkit \
     libmagic1 \
-    python3-dev \
     libyara-dev \
     git \
     net-tools \
@@ -19,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Installation des dépendances Python
-RUN pip install --no-cache-dir \
+RUN pip3 install --no-cache-dir \
     requests \
     python-magic \
     yara-python \
@@ -70,6 +73,7 @@ ENV CLAMD_TCP=localhost:3310
 # Script de vérification de l'environnement
 RUN echo '#!/bin/sh\n\
 echo "Vérification de l\'environnement..."\n\
+echo "Python: $(python3 --version)"\n\
 echo "ClamAV: $(which clamd)"\n\
 echo "YARA: $(which yara)"\n\
 echo "ExifTool: $(which exiftool)"\n\
@@ -80,4 +84,4 @@ ls -la /app\n\
 ls -la /var/run/clamav\n' > /app/check_env.sh && chmod +x /app/check_env.sh
 
 # Commande par défaut
-CMD ["sh", "-c", "/app/check_env.sh && service clamav-daemon start && sleep 3 && python forensic_analyzer.py /app/input"]
+CMD ["sh", "-c", "/app/check_env.sh && service clamav-daemon start && sleep 3 && python3 forensic_analyzer.py /app/input"] 
