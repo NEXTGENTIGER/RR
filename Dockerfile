@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir \
     yara-python \
     git+https://github.com/graingert/python-clamd.git@master
 
-# Copie du script principal
+# Copie des fichiers
 COPY forensic_analyzer.py .
 
 # Création des répertoires nécessaires
@@ -48,4 +48,4 @@ ENV PYTHONUNBUFFERED=1
 ENV TZ=UTC
 
 # Commande par défaut
-CMD ["python", "forensic_analyzer.py"] 
+CMD service clamav-daemon start && tail -f /dev/null 
