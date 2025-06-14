@@ -1,10 +1,13 @@
 FROM debian:bullseye-slim
 
-# Installation de Python et des dépendances système
+# Installation de Python, des outils de compilation et des dépendances système
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     python3-dev \
+    build-essential \
+    gcc \
+    make \
     clamav \
     clamav-daemon \
     clamav-freshclam \
@@ -20,7 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Configuration du répertoire de travail
 WORKDIR /app
 
-# Installation des dépendances Python (avec remplacement de pycrypto par pycryptodome)
+# Installation des dépendances Python (pycrypto remplacé par pycryptodome)
 RUN pip3 install --no-cache-dir \
     requests \
     python-magic \
