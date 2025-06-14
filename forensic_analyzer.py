@@ -84,14 +84,6 @@ TOOLS = {
     }
 }
 
-# Importation conditionnelle de clamd
-CLAMD_AVAILABLE = False
-try:
-    import clamd
-    CLAMD_AVAILABLE = True
-except ImportError:
-    print("Warning: clamd module not available. ClamAV scanning will be disabled.")
-
 class DateTimeEncoder(JSONEncoder):
     """Encodeur personnalisé pour gérer les objets datetime dans le JSON."""
     def default(self, obj):
@@ -100,6 +92,14 @@ class DateTimeEncoder(JSONEncoder):
         return super().default(obj)
 
 class ForensicAnalyzer:
+    # Variable de classe pour ClamAV
+    clamd_available = False
+    try:
+        import clamd
+        clamd_available = True
+    except ImportError:
+        print("Warning: clamd module not available. ClamAV scanning will be disabled.")
+
     def __init__(self, file_path, api_endpoint="http://localhost:5000/api/report"):
         self.file_path = file_path
         self.file_name = os.path.basename(file_path)
@@ -113,7 +113,7 @@ class ForensicAnalyzer:
         
         # Initialisation de ClamAV
         self.clamd_client = None
-        if CLAMD_AVAILABLE:
+        if self.clamd_available:
             try:
                 self.clamd_client = clamd.ClamdUnixSocket()
             except Exception as e:
@@ -168,7 +168,7 @@ class ForensicAnalyzer:
 
     def scan_clamav(self):
         """Analyse le fichier avec ClamAV."""
-        if not CLAMD_AVAILABLE or self.clamd_client is None:
+        if not self.clamd_available or self.clamd_client is None:
             return {"status": "ClamAV scanning disabled - module not available"}
         
         try:
