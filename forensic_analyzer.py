@@ -6,7 +6,6 @@ import subprocess
 import requests
 import magic
 import yara
-import clamd
 import tempfile
 import shutil
 import logging
@@ -75,14 +74,6 @@ TOOLS = {
         },
         'required': False
     },
-    'bulk_extractor': {
-        'commands': {
-            'Windows': ['bulk_extractor.exe'],
-            'Linux': ['bulk_extractor'],
-            'Darwin': ['bulk_extractor']
-        },
-        'required': False
-    },
     'exiftool': {
         'commands': {
             'Windows': ['exiftool.exe'],
@@ -94,11 +85,11 @@ TOOLS = {
 }
 
 # Importation conditionnelle de clamd
+CLAMD_AVAILABLE = False
 try:
     import clamd
     CLAMD_AVAILABLE = True
 except ImportError:
-    CLAMD_AVAILABLE = False
     print("Warning: clamd module not available. ClamAV scanning will be disabled.")
 
 class DateTimeEncoder(JSONEncoder):
@@ -119,12 +110,14 @@ class ForensicAnalyzer:
         self.rules_dir = "/app/rules"
         self.setup_directories()
         self.setup_logging()
+        
+        # Initialisation de ClamAV
+        self.clamd_client = None
         if CLAMD_AVAILABLE:
             try:
                 self.clamd_client = clamd.ClamdUnixSocket()
             except Exception as e:
                 print(f"Warning: Could not connect to ClamAV daemon: {e}")
-                CLAMD_AVAILABLE = False
 
     def setup_directories(self):
         """Crée les répertoires nécessaires."""
@@ -175,7 +168,7 @@ class ForensicAnalyzer:
 
     def scan_clamav(self):
         """Analyse le fichier avec ClamAV."""
-        if not CLAMD_AVAILABLE:
+        if not CLAMD_AVAILABLE or self.clamd_client is None:
             return {"status": "ClamAV scanning disabled - module not available"}
         
         try:
