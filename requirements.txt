@@ -1,10 +1,4 @@
-# Les dépendances seront installées via apt
-# python3-requests
-# python3-magic
-# python3-yara
-# python3-clamd
-# python3-exiftool
-# python3-pathlib 
+#!/bin/bash
 
 # Installation des dépendances système
 sudo apt-get update
@@ -24,5 +18,14 @@ sudo apt-get install -y \
     python3-dev \
     libyara-dev
 
-# Après l'installation, exécuter :
-# python3 forensic_analyzer.py /chemin/vers/votre/fichier 
+# Création et activation de l'environnement virtuel
+python3 -m venv venv
+source venv/bin/activate
+
+# Installation des dépendances Python
+pip install -r requirements.txt
+
+echo "Installation terminée !"
+echo "Pour utiliser le script :"
+echo "1. Activez l'environnement virtuel : source venv/bin/activate"
+echo "2. Exécutez le script : python forensic_analyzer.py /chemin/vers/votre/fichier"
