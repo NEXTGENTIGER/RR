@@ -1,6 +1,28 @@
-requests==2.31.0
-python-magic==0.4.27
-yara-python==4.3.1
-python-clamd==0.4.1
-exiftool>=0.5.5
-pathlib>=1.0.1 
+# Les dépendances seront installées via apt
+# python3-requests
+# python3-magic
+# python3-yara
+# python3-clamd
+# python3-exiftool
+# python3-pathlib 
+
+# Installation des dépendances système
+sudo apt-get update
+sudo apt-get install -y \
+    python3-requests \
+    python3-magic \
+    python3-yara \
+    python3-clamd \
+    python3-exiftool \
+    python3-pathlib \
+    clamav \
+    clamav-daemon \
+    yara \
+    exiftool \
+    sleuthkit \
+    libmagic1 \
+    python3-dev \
+    libyara-dev
+
+# Après l'installation, exécuter :
+# python3 forensic_analyzer.py /chemin/vers/votre/fichier 
